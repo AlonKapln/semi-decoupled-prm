@@ -1,0 +1,153 @@
+{
+  "__class__": "Scene",
+  "obstacles": [],
+  "robots": [
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        -7.0,
+        0.0
+      ],
+      "end": [
+        7.0,
+        0.0
+      ],
+      "data": {
+        "color": "blue",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        7.0,
+        0.0
+      ],
+      "end": [
+        -7.0,
+        0.0
+      ],
+      "data": {
+        "color": "blue",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        0.0,
+        -5.0
+      ],
+      "end": [
+        0.0,
+        5.0
+      ],
+      "data": {
+        "color": "blue",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        0.0,
+        5.0
+      ],
+      "end": [
+        0.0,
+        -5.0
+      ],
+      "data": {
+        "color": "blue",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        -7.0,
+        -5.0
+      ],
+      "end": [
+        7.0,
+        5.0
+      ],
+      "data": {
+        "color": "blue",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        7.0,
+        5.0
+      ],
+      "end": [
+        -7.0,
+        -5.0
+      ],
+      "data": {
+        "color": "blue",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        7.0,
+        -5.0
+      ],
+      "end": [
+        -7.0,
+        5.0
+      ],
+      "data": {
+        "color": "blue",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        -7.0,
+        5.0
+      ],
+      "end": [
+        7.0,
+        -5.0
+      ],
+      "data": {
+        "color": "blue",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    }
+  ],
+  "metadata": {
+    "version": "1.4.5"
+  }
+}
