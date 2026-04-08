@@ -1,0 +1,15 @@
+\section*{Plan}
+we will assume that all robots are of the same size and are disc shaped. We will also assume that all obstacles are simple polygons.
+\noindent The solver breaks down into three steps:
+\begin{enumerate}
+    \item Scene Decomposition: Given a scene, we want to calculate it's configuration space, but we want to impose a different method -
+    \begin{itemize}
+        \item We first take the scene and take a Minkowski difference using the robot's radius. this will grant us the \textbf{free space}
+        \item We will then want to decompose the \textbf{free space} using some decomposition method - e.g triangulation, SVM decomposition, simple decomposition into square, trapezoidal decomposition. - \textbf{NOTE: I need to choose one}
+        \item Given these cells, we will decide on their relative density (the amount of robots we will allow to reside in the cell) given the cell area and the robot radius.
+    \end{itemize}
+    \item We will then sample using regular PRM a map of this cell, but the configuration space in this cell will be created using the fact that we allow x (the cell's density) amount of robots to reside in the cell at each time.
+    \item after sampling a map for each cell, we will create a high level map of the cells, and solve a MCF problem on the graph. this needs to be formally defined since the start and end points of the robots need to be nodes in the graph, perhaps a good method will be to treat the points in between the cells and the start's and target's of the robots as the nodes, and the cells as the edges for the MCF formal definition.
+    \item After solving this, we will need to orchestrate the paths on the high level graphs to take place in each cell separately - this could be done using temporal planning, meaning that we will assume something on the time of each robot's traversal of a cell, perhaps using some points where robots will hold.
+    \item compile these paths and connect them to create a path readable by discopygal to view the solution.
+\end{enumerate}
