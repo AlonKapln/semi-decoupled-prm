@@ -106,6 +106,30 @@ def _pairwise_separated(points: List[Tuple[float, float]], min_dist_sq: float) -
     return True
 
 
+def _min_edge_distance(poly: Pol2.Polygon_2, x: float, y: float) -> float:
+    """Signed distance from ``(x, y)`` to the nearest edge of a CCW polygon.
+
+    Positive means inside, negative means outside.  For a convex CCW
+    polygon this equals the inset depth — i.e. how far from the boundary
+    the point sits.
+    """
+    verts = [(v.x().to_double(), v.y().to_double()) for v in poly.vertices()]
+    n = len(verts)
+    min_d = float("inf")
+    for i in range(n):
+        ax, ay = verts[i]
+        bx, by = verts[(i + 1) % n]
+        ex, ey = bx - ax, by - ay
+        length = math.sqrt(ex * ex + ey * ey)
+        if length < 1e-12:
+            continue
+        # Signed distance: positive = left of edge = inside for CCW
+        d = (ex * (y - ay) - ey * (x - ax)) / length
+        if d < min_d:
+            min_d = d
+    return min_d
+
+
 def _config_distance(c1: JointConfig, c2: JointConfig) -> float:
     """Maximum single-robot displacement between two joint configurations.
 
@@ -153,9 +177,14 @@ def _sample_joint_config(
     robot_radius: float,
     rng: random.Random,
     pinned: Optional[List[Tuple[float, float]]] = None,
-    max_tries: int = 500,
+    max_tries_per_robot: int = 200,
+    boundary_margin: float = 0.0,
 ) -> Optional[JointConfig]:
-    """Rejection-sample a valid joint configuration of ``k`` robots.
+    """Incrementally sample a valid joint configuration of ``k`` robots.
+
+    Places robots one at a time. Each new robot must be inside the polygon,
+    at least ``boundary_margin`` from every edge, and separated from all
+    previously placed robots by at least ``2r``.
 
     If ``pinned`` is given those positions are fixed (already validated by
     the caller) and only the remaining slots are sampled.
@@ -169,17 +198,21 @@ def _sample_joint_config(
     if not _pairwise_separated(points, min_sq):
         return None
 
-    tries = 0
-    while len(points) < k and tries < max_tries:
-        tries += 1
-        x = rng.uniform(minx, maxx)
-        y = rng.uniform(miny, maxy)
-        if not _point_inside_polygon(poly, x, y):
-            continue
-        if all((x - px) ** 2 + (y - py) ** 2 >= min_sq for px, py in points):
-            points.append((x, y))
-    if len(points) < k:
-        return None
+    while len(points) < k:
+        placed = False
+        for _ in range(max_tries_per_robot):
+            x = rng.uniform(minx, maxx)
+            y = rng.uniform(miny, maxy)
+            if not _point_inside_polygon(poly, x, y):
+                continue
+            if boundary_margin > 0 and _min_edge_distance(poly, x, y) < boundary_margin:
+                continue
+            if all((x - px) ** 2 + (y - py) ** 2 >= min_sq for px, py in points):
+                points.append((x, y))
+                placed = True
+                break
+        if not placed:
+            return None
     return tuple(points)
 
 
@@ -216,18 +249,32 @@ def build_cell_roadmap(
             roadmap edges.
         steer_steps: discretisation of the swept-volume collision check.
         seed: optional RNG seed for reproducibility.
+
+    The PRM operates in joint space with ``k = partition.density`` robots.
+    The grid refinement in ``scene_partitioning`` ensures that density
+    values are bounded by ``max_cell_density`` (default 8), keeping the
+    joint-space dimension tractable for the incremental placement sampler.
     """
     rng = random.Random(seed)
     poly = partition.polygon
     k = max(1, partition.density)
     r = partition.robot_radius
 
+    # Use boundary margin = r so all PRM points are at least r from cell
+    # edges, preventing cross-cell robot collisions.  Fall back to no
+    # margin for very narrow cells where inset sampling would fail.
+    margin = r
+    _test_cfg = _sample_joint_config(poly, 1, r, rng, boundary_margin=margin,
+                                     max_tries_per_robot=50)
+    if _test_cfg is None:
+        margin = 0.0  # cell too narrow for inset sampling
+
     graph = nx.Graph()
     samples: List[JointConfig] = []
 
     # Random interior samples
     for _ in range(num_samples):
-        cfg = _sample_joint_config(poly, k, r, rng)
+        cfg = _sample_joint_config(poly, k, r, rng, boundary_margin=margin)
         if cfg is None:
             continue
         if cfg not in graph:
@@ -235,13 +282,32 @@ def build_cell_roadmap(
             samples.append(cfg)
 
     # Boundary-port anchor configs
+    # Port midpoints lie on the cell boundary.  Nudge them r toward the
+    # centroid so the pinned position respects the boundary margin and
+    # prevents cross-cell collisions at ports.
+    cx = sum(v.x().to_double() for v in poly.vertices()) / poly.size()
+    cy = sum(v.y().to_double() for v in poly.vertices()) / poly.size()
+
     port_nodes: Dict[int, JointConfig] = {}
     for boundary_id, (px, py) in boundary_ports.items():
-        if not _point_inside_polygon(poly, px, py):
-            continue
+        # Nudge toward centroid by r (or less if cell is small)
+        dx, dy = cx - px, cy - py
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist > 1e-12:
+            nudge = min(margin, dist * 0.5) if margin > 0 else 1e-6
+            npx = px + (nudge / dist) * dx
+            npy = py + (nudge / dist) * dy
+        else:
+            npx, npy = px, py
         cfg = _sample_joint_config(
-            poly, k, r, rng, pinned=[(px, py)], max_tries=500
+            poly, k, r, rng, pinned=[(npx, npy)],
+            boundary_margin=margin,
         )
+        if cfg is None:
+            # Retry without margin
+            cfg = _sample_joint_config(
+                poly, k, r, rng, pinned=[(npx, npy)],
+            )
         if cfg is None:
             continue
         if cfg not in graph:
