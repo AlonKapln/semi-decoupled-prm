@@ -1,230 +1,119 @@
-import math
-from itertools import combinations
 from typing import List, Tuple
 
-import numpy as np
-from shapely.geometry import Polygon as ShapelyPolygon, box as shapely_box
-from sklearn.svm import SVC
+from discopygal.bindings import (
+    Aos2,
+    Arr_overlay_function_traits,
+    Arrangement_2,
+    Curve_2,
+    Halfedge,
+    Ker,
+    Point_2,
+    Pol2,
+    Segment_2,
+    Vertex,
+)
+from discopygal.solvers_infra import Scene
 
-from discopygal.bindings import Point_2, FT, Pol2
-from discopygal.solvers_infra import Scene, ObstaclePolygon
-
-from Partition import Partition
-
-
-def _compute_bounding_box(scene: Scene, padding: float = 0.0):
-    """Compute axis-aligned bounding box of the scene (robots + obstacles), with optional padding."""
-    xs, ys = [], []
-
-    for robot in scene.robots:
-        for pt in (robot.start, robot.end):
-            xs.append(pt.x().to_double())
-            ys.append(pt.y().to_double())
-
-    for obstacle in scene.obstacles:
-        if isinstance(obstacle, ObstaclePolygon):
-            for pt in obstacle.poly.vertices():
-                xs.append(pt.x().to_double())
-                ys.append(pt.y().to_double())
-
-    return float(min(xs) - padding), float(max(xs) + padding), float(min(ys) - padding), float(max(ys) + padding)
+from partition import Partition
+from free_space_builder import FREE, construct_free_space
 
 
-def partition_scene(scene: Scene, cell_size: float = 1.0) -> List[Partition]:
+def _to_ker_point_2(point) -> "Ker.Point_2":
+    """Convert a CGAL extended ``TPoint`` (used for arc endpoints) to a plain
+    ``Ker.Point_2`` by taking only the rational part. Mirrors
+    ``ExactSingle.to_ker_point_2``."""
+    return Ker.Point_2(point.x().a0(), point.y().a0())
+
+
+def _vertical_decompose(arr: Arrangement_2) -> Aos2:
+    """Add vertical walls to ``arr`` so every face is a trapezoid.
+
+    Lifted from ``ExactSingle.vertical_decomposition``. ``Aos2.decompose``
+    returns, for each vertex of the arrangement, the topmost and bottommost
+    objects (vertices or halfedges) directly above/below it. We turn each
+    such (vertex, object) pair into a vertical line segment and overlay the
+    resulting walls back onto the arrangement.
+
+    The face ``data()`` tags from the input are preserved by the overlay
+    (their sum is unchanged because the wall arrangement uses ``data() == 0``).
     """
-    Partition the scene into equal-sized square cells.
+    decomposition = Aos2.decompose(arr)
+    walls = []
+    for vertex, neighbours in decomposition:
+        v_point = _to_ker_point_2(vertex.point())
+        for obj in neighbours:
+            if isinstance(obj, Vertex):
+                other = _to_ker_point_2(obj.point())
+                walls.append(Curve_2(Segment_2(v_point, other)))
+            elif isinstance(obj, Halfedge):
+                line = Ker.Line_2(
+                    _to_ker_point_2(obj.source().point()),
+                    _to_ker_point_2(obj.target().point()),
+                )
+                y_at_x = line.y_at_x(v_point.x())
+                walls.append(
+                    Curve_2(Segment_2(v_point, Point_2(v_point.x(), y_at_x)))
+                )
 
-    Args:
-        scene: A discopygal Scene with robots and obstacles.
-        cell_size: Side length of each square cell.
+    walls_arr = Arrangement_2()
+    Aos2.insert(walls_arr, walls)
+    for face in walls_arr.faces():
+        face.set_data(FREE)
 
-    Returns:
-        List of Partition objects covering the scene bounding box.
+    traits = Arr_overlay_function_traits(lambda x, y: x + y)
+    return Aos2.overlay(arr, walls_arr, traits)
+
+
+def _face_to_polygon(face) -> Pol2.Polygon_2:
+    """Walk the outer CCB of a free face and emit a CGAL ``Polygon_2``.
+
+    The vertices of an arrangement built from ``approximated_offset_2`` live
+    in CGAL's *extended* number type (each coordinate is ``a0 + a1·sqrt(γ)``)
+    so that circular arc intersections are exact. The trapezoidal cells we
+    care about have only straight edges, but their endpoints can still sit on
+    arc intersection points. We project to the rational part via ``a0()``;
+    the resulting cell is a strict subset of the true free face which is
+    safe (it never claims blocked area as free).
     """
-    max_radius = max(robot.radius for robot in scene.robots)
-    x_min, x_max, y_min, y_max = _compute_bounding_box(scene, padding=max_radius)
-
-    cols = math.ceil((x_max - x_min) / cell_size)
-    rows = math.ceil((y_max - y_min) / cell_size)
-
-    partitions: List[Partition] = []
-    for row in range(rows):
-        for col in range(cols):
-            x0 = x_min + col * cell_size
-            y0 = y_min + row * cell_size
-            x1 = x0 + cell_size
-            y1 = y0 + cell_size
-
-            poly = Pol2.Polygon_2()
-            poly.push_back(Point_2(FT(x0), FT(y0)))
-            poly.push_back(Point_2(FT(x1), FT(y0)))
-            poly.push_back(Point_2(FT(x1), FT(y1)))
-            poly.push_back(Point_2(FT(x0), FT(y1)))
-
-            partitions.append(Partition(polygon=poly))
-
-    return partitions
-
-
-def _split_polygon_by_line(poly: ShapelyPolygon, w: np.ndarray, b: float,
-                           big: float = 1e6) -> List[ShapelyPolygon]:
-    """Split a shapely polygon by the line w·x + b = 0 into up to two sub-polygons.
-
-    Constructs a large half-plane box on each side of the line and intersects
-    with the polygon.
-    """
-    # Normal direction and perpendicular
-    nx, ny = w[0], w[1]
-    norm = math.hypot(nx, ny)
-    nx, ny = nx / norm, ny / norm
-    # Perpendicular (tangent along the line)
-    tx, ty = -ny, nx
-
-    # Build a large quad for the positive half-plane (w·x + b >= 0)
-    # Shift the line's base point: a point on the line is found by solving w·p + b = 0
-    # Use the point closest to origin: p0 = -b * w / ||w||^2
-    w_norm_sq = w[0] ** 2 + w[1] ** 2
-    p0 = -b * w / w_norm_sq  # point on the line
-
-    # Four corners of the positive half-plane box
-    pos_quad = ShapelyPolygon([
-        (p0[0] + big * tx + big * nx, p0[1] + big * ty + big * ny),
-        (p0[0] - big * tx + big * nx, p0[1] - big * ty + big * ny),
-        (p0[0] - big * tx, p0[1] - big * ty),
-        (p0[0] + big * tx, p0[1] + big * ty),
-    ])
-    neg_quad = ShapelyPolygon([
-        (p0[0] + big * tx - big * nx, p0[1] + big * ty - big * ny),
-        (p0[0] - big * tx - big * nx, p0[1] - big * ty - big * ny),
-        (p0[0] - big * tx, p0[1] - big * ty),
-        (p0[0] + big * tx, p0[1] + big * ty),
-    ])
-
-    results = []
-    for half_plane in (pos_quad, neg_quad):
-        piece = poly.intersection(half_plane)
-        if piece.is_empty:
-            continue
-        # intersection can produce MultiPolygon or GeometryCollection
-        if piece.geom_type == 'Polygon' and piece.area > 1e-10:
-            results.append(piece)
-        elif piece.geom_type in ('MultiPolygon', 'GeometryCollection'):
-            for geom in piece.geoms:
-                if geom.geom_type == 'Polygon' and geom.area > 1e-10:
-                    results.append(geom)
-
-    return results
-
-
-def _shapely_to_cgal_polygon(spoly: ShapelyPolygon) -> Pol2.Polygon_2:
-    """Convert a shapely Polygon to a CGAL Polygon_2 (counter-clockwise)."""
-    coords = list(spoly.exterior.coords)[:-1]  # drop closing duplicate vertex
-    # Ensure counter-clockwise orientation (shapely uses CCW by default for valid polygons)
     poly = Pol2.Polygon_2()
-    for x, y in coords:
-        poly.push_back(Point_2(FT(x), FT(y)))
+    for halfedge in face.outer_ccb():
+        src = halfedge.source().point()
+        poly.push_back(Point_2(src.x().a0(), src.y().a0()))
     if poly.is_clockwise_oriented():
         poly.reverse_orientation()
     return poly
 
 
-def _extract_svm_lines(scene: Scene, C: float) -> List[Tuple[np.ndarray, float]]:
-    """Train one-vs-one linear SVMs for each robot pair, return list of (w, b) lines."""
-    n = len(scene.robots)
-    points = []
-    labels = []
-    for i, robot in enumerate(scene.robots):
-        points.append([robot.start.x().to_double(), robot.start.y().to_double()])
-        points.append([robot.end.x().to_double(), robot.end.y().to_double()])
-        labels.extend([i, i])
+def partition_free_space_vertical(
+        scene: Scene,
+        robot_radius: float,
+        eps: float = 1e-4,
+) -> Tuple[List[Partition], Arrangement_2]:
+    """Build the disc-robot free space and partition it into trapezoidal cells.
 
-    points = np.array(points)
-    labels = np.array(labels)
+    This implements steps 1+2 of ``plan.tex``:
 
-    lines = []
-    seen_normals = []
+    1. ``construct_free_space`` builds an arrangement of inflated obstacles
+       clipped to the bounding box (faces tagged ``FREE`` / ``BLOCKED``).
+    2. ``_vertical_decompose`` adds vertical walls at every vertex, splitting
+       every free face into convex trapezoids/triangles.
+    3. Each free face is then converted to a ``Pol2.Polygon_2`` and wrapped
+       in a ``Partition`` whose ``density`` is computed from area and
+       ``robot_radius``.
 
-    for i, j in combinations(range(n), 2):
-        mask = (labels == i) | (labels == j)
-        X = points[mask]
-        y = labels[mask]
-        # Relabel to +1/-1
-        y_bin = np.where(y == i, 1, -1)
-
-        # Skip if all points are identical (no separation possible)
-        if np.allclose(X[y_bin == 1], X[y_bin == -1]):
-            continue
-
-        svm = SVC(kernel='linear', C=C)
-        svm.fit(X, y_bin)
-        w = svm.coef_[0]
-        b = svm.intercept_[0]
-
-        # Normalize w to unit length for deduplication
-        w_norm = np.linalg.norm(w)
-        if w_norm < 1e-12:
-            continue
-        w_unit = w / w_norm
-        b_unit = b / w_norm
-
-        # Skip near-duplicate lines (same direction and offset)
-        is_dup = False
-        for w_prev, b_prev in seen_normals:
-            # Check if lines are essentially the same (parallel + same offset)
-            dot = abs(np.dot(w_unit, w_prev))
-            if dot > 0.999:
-                # Same direction — check offset
-                sign = np.sign(np.dot(w_unit, w_prev))
-                if abs(b_unit - sign * b_prev) < 0.01:
-                    is_dup = True
-                    break
-        if is_dup:
-            continue
-
-        seen_normals.append((w_unit, b_unit))
-        lines.append((w, b))
-
-    return lines
-
-
-def partition_scene_svm(scene: Scene, C: float = 1.0) -> List[Partition]:
+    The returned arrangement is preserved so downstream stages (the
+    high-level graph builder) can walk halfedges to find shared boundaries
+    between adjacent cells.
     """
-    Partition the scene using SVM decision boundaries.
+    arr = construct_free_space(scene, robot_radius=robot_radius, eps=eps)
+    arr = _vertical_decompose(arr)
 
-    Trains one-vs-one linear SVMs between each pair of robots, then uses the
-    resulting maximum-margin separating lines to split the bounding box into
-    convex cells.
-
-    Args:
-        scene: A discopygal Scene with robots and obstacles.
-        C: SVM regularization parameter (soft-margin). Higher = harder margin.
-
-    Returns:
-        List of Partition objects covering the scene bounding box.
-    """
-    max_radius = max(robot.radius for robot in scene.robots)
-    x_min, x_max, y_min, y_max = _compute_bounding_box(scene, padding=max_radius)
-
-    # Start with the bounding box as a single cell
-    bbox = shapely_box(x_min, y_min, x_max, y_max)
-    cells: List[ShapelyPolygon] = [bbox]
-
-    # Get SVM separating lines
-    lines = _extract_svm_lines(scene, C)
-
-    # Iteratively split cells by each SVM line
-    for w, b in lines:
-        w = np.array(w)
-        new_cells = []
-        for cell in cells:
-            pieces = _split_polygon_by_line(cell, w, b)
-            new_cells.extend(pieces)
-        cells = new_cells
-
-    # Convert to Partition objects
-    partitions = []
-    for cell in cells:
-        cgal_poly = _shapely_to_cgal_polygon(cell)
-        partitions.append(Partition(polygon=cgal_poly))
-
-    return partitions
+    partitions: List[Partition] = []
+    for face in arr.faces():
+        if face.is_unbounded() or face.data() != FREE:
+            continue
+        poly = _face_to_polygon(face)
+        if poly.size() < 3:
+            continue
+        partitions.append(Partition(polygon=poly, robot_radius=robot_radius))
+    return partitions, arr
