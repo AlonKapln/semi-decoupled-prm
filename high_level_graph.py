@@ -1,57 +1,38 @@
 """High-level cell-adjacency graph for multi-commodity flow.
 
-Step 5 of ``plan.tex``.  Given the trapezoidal partitions from step 2 and
-robot start/goal positions, this module builds a graph whose:
+Step 5 of ``plan.tex``. Given the partitions from step 2 and robot
+start/goal positions, this module builds a graph whose
 
-- **Nodes** are boundary ports (midpoints of shared edges between cells)
+- **Nodes** are validated boundary ports (on shared edges between cells)
   plus robot start and goal positions.
-- **Edges** represent traversal through a cell, connecting pairs of
-  incident nodes.  Edge attributes include the cell index and capacity.
-
-Two graph topologies are supported (selectable via the ``topology``
-parameter) so their behaviour can be compared:
-
-``"pairwise"``
-    Every pair of nodes incident to the same cell is connected by a direct
-    edge.  Simple, O(m²) edges per cell where m is the number of incident
-    nodes (typically 3–5 for trapezoids).  Each cell traversal is one hop.
-
-``"star"``
-    Each cell gets a virtual **hub** node at its centroid.  Incident nodes
-    connect to the hub instead of to each other.  O(m) edges per cell, and
-    the hub naturally enforces per-cell capacity, but each cell traversal
-    takes **two** hops (enter hub then leave hub), which inflates the
-    time-expanded ILP.
+- **Edges** represent traversal through a cell, connecting every pair of
+  nodes incident to that cell (pairwise topology). Edge attributes
+  include the cell index, capacity, and Euclidean cost.
 
 Adjacency discovery
 -------------------
-Two trapezoidal cells are adjacent when their ``Pol2.Polygon_2`` outlines
-share a complete edge (a pair of consecutive vertices).  After vertical
-decomposition every arrangement edge is maximally split, so shared edges
-appear as identical vertex pairs in both polygons.  We round vertex
-coordinates to ``_COORD_PRECISION`` decimal places to absorb any float
-noise from the ``a0()`` rational projection.
+Two cells are adjacent when their ``Pol2.Polygon_2`` outlines share a
+complete edge (a pair of consecutive vertices). Vertex coordinates are
+rounded to ``_COORD_PRECISION`` decimal places to absorb any float noise
+from the ``a0()`` rational projection.
 
-Boundary-port positions
+Boundary-port placement
 -----------------------
-Each shared edge produces **one or more** port nodes, placed along
-subsegments where an ``r``-inward inset is valid on both sides. Long
-edges (grid-decomposition boundaries between large open cells) get
-multiple ports spaced by ``_MIN_PORT_SPACING_R * robot_radius`` so MCF
-sees parallel capacity channels and doesn't bottleneck the whole edge
-on a single transit slot. Edges with no usable subsegment are dropped.
+Each shared edge produces zero or more port nodes along subsegments
+where an ``r``-inward inset is valid on both sides **and** survives a
+``2r`` straight-line escape check (so ports never sit in dead-end
+pockets). Long edges get multiple ports spaced by
+``_MIN_PORT_SPACING_R * r`` so MCF sees parallel capacity channels
+instead of bottlenecking the wall on a single transit slot. Ports are
+also kept ``_PORT_EDGE_END_MARGIN_R * r`` away from edge endpoints, and
+per-cell proximity tracking rejects any candidate whose inset in either
+adjacent cell lands within that same minimum spacing of an
+already-placed inset.
 
 The ``cell_boundary_ports`` output maps each cell index to a ``{port_id:
-inset_position_inside_that_cell}`` dict: the inset is precomputed at HLG
-build time so path realisation can look it up directly without rerunning
-the geometry search.
-
-Time-horizon estimation
------------------------
-``estimate_time_horizon`` counts the maximum unweighted shortest-path
-length (in hops) from any robot's start node to its goal node and
-multiplies by a congestion factor, matching the heuristic in
-``multi_robot_flow_solver.py:224-236``.
+inset_position_inside_that_cell}`` dict: the per-side inset is
+precomputed at HLG build time so path realisation can look it up
+directly without rerunning the geometry search.
 """
 
 import math
@@ -65,48 +46,35 @@ from discopygal.bindings import FT, Point_2, Pol2
 
 from partition import Partition
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-# Round vertex coordinates to this many decimal places when comparing edges
-# across cells.  Vertices come from _face_to_polygon's a0() projection so
-# they should be bit-identical; rounding guards against float noise.
+# Round vertex coordinates to this many decimal places when comparing
+# edges across cells. Vertices come from _face_to_polygon's a0()
+# projection so they should be bit-identical; rounding guards against
+# float noise.
 _COORD_PRECISION = 10
 
 # Shift port insets along the shared-edge tangent (in opposite
 # directions per side) so opposing insets are not directly perpendicular
 # across from each other. Without this, both sides inset by exactly r
 # land 2r apart and discopygal's swept-disc collision check reports
-# tangent contact between adjacent-cell robots as a collision. The
-# tangential offset adds lateral separation without demanding more
-# perpendicular inset than the cell can support.
+# tangent contact between adjacent-cell robots as a collision.
 _PORT_TANGENT_OFFSET = 0.2
 
-# Minimum along-edge spacing between adjacent ports on the same shared
-# edge, in units of robot radius. Two robots simultaneously transiting
-# adjacent ports sit this far apart along the wall; they also each need
-# room to swing inward by r toward their in-cell insets. Empirically,
-# spacings below ~8r make the ad-hoc joint PRM struggle (two transit
-# robots sharing a cell via neighbouring ports can't find valid
-# intermediate configs), while spacings above ~16r leave MCF
-# under-utilising long walls. 10r is the sweet spot.
+# Minimum along-edge spacing (in units of robot radius) between adjacent
+# ports on the same shared edge. Same constant is reused for the
+# cross-edge proximity check so two ports on different shared edges of
+# the same cell are never closer in cell interior than this threshold.
+# Below ~8r the ad-hoc joint PRM struggles to find intermediate configs
+# for two transit robots near each other; above ~16r MCF
+# under-utilises long walls. 10r is the sweet spot.
 _MIN_PORT_SPACING_R = 10.0
 
 # Margin (in units of robot radius) kept between any port and the
-# endpoints of its shared edge. Two distinct shared edges of the same
-# cell meet at a vertex; a port placed near that vertex on edge A ends
-# up arbitrarily close to a port placed near the same vertex on edge B,
-# which breaks the joint PRM's 2r pairwise separation. Trimming the
-# valid region by this margin at both ends of every edge pushes ports
-# away from corners and keeps ports on different shared edges of the
-# same cell from landing on top of each other.
+# endpoints of its shared edge. Different shared edges of the same cell
+# meet at such endpoints, so trimming the valid region at each end
+# pushes ports away from corners and complements the per-cell proximity
+# check above.
 _PORT_EDGE_END_MARGIN_R = 3.0
 
-
-# ---------------------------------------------------------------------------
-# Output dataclass
-# ---------------------------------------------------------------------------
 
 @dataclass
 class HighLevelGraph:
@@ -115,31 +83,24 @@ class HighLevelGraph:
     Attributes
     ----------
     graph : nx.Graph
-        Nodes are strings (``"port_0"``, ``"start_1"``, ``"goal_2"``,
-        ``"hub_3"``).  Node attributes include ``kind`` (``"port"``,
-        ``"start"``, ``"goal"``, ``"hub"``).  Edge attributes:
-
-        - ``cell_id`` (int) — which cell this traversal passes through.
-        - ``capacity`` (int) — cell density (max simultaneous robots).
-        - ``cost`` (float) — Euclidean distance between endpoints.
-
+        Nodes are strings (``"port_0"``, ``"start_1"``, ``"goal_2"``)
+        with attribute ``kind``. Edges carry ``cell_id`` (int),
+        ``capacity`` (int — per-cell density), and ``cost`` (float —
+        Euclidean distance between endpoints).
     node_positions : dict[str, (float, float)]
         Geometric position for every node.
     cell_boundary_ports : dict[int, dict[int, (float, float)]]
-        For each cell index, ``{port_id: (x, y)}`` where ``(x, y)`` is the
-        precomputed ``r``-inset of the port *inside that cell* (not the
-        raw edge midpoint). Used directly by path realisation as the
-        joint-PRM entry/exit position for a robot transiting through the
-        cell via that port.
+        For each cell index, ``{port_id: (x, y)}`` where ``(x, y)`` is
+        the precomputed inset of the port *inside that cell*. Used
+        directly by path realisation as the joint-PRM entry/exit
+        position for a robot transiting the cell via that port.
     cell_incident_nodes : dict[int, list[str]]
-        For each cell index, the list of node IDs incident to that cell
-        (ports, starts, goals — and hubs in star topology).
+        For each cell index, the list of node IDs incident to it
+        (ports, starts, goals).
     start_cells : dict[int, int]
-        Maps robot index → cell index containing the robot's start.
+        Robot index → cell index containing the robot's start.
     goal_cells : dict[int, int]
-        Maps robot index → cell index containing the robot's goal.
-    topology : str
-        ``"pairwise"`` or ``"star"``.
+        Robot index → cell index containing the robot's goal.
     """
 
     graph: nx.Graph
@@ -148,7 +109,6 @@ class HighLevelGraph:
     cell_incident_nodes: Dict[int, List[str]]
     start_cells: Dict[int, int]
     goal_cells: Dict[int, int]
-    topology: str
 
 
 # ---------------------------------------------------------------------------
@@ -157,32 +117,19 @@ class HighLevelGraph:
 
 def _point_in_polygon(poly: Pol2.Polygon_2, x: float, y: float) -> bool:
     """Closed (boundary-inclusive) containment test."""
-    side = poly.bounded_side(Point_2(FT(x), FT(y)))
-    return side != Bounded_side.ON_UNBOUNDED_SIDE
+    return poly.bounded_side(
+        Point_2(FT(x), FT(y)),
+    ) != Bounded_side.ON_UNBOUNDED_SIDE
 
-
-def _polygon_centroid(poly: Pol2.Polygon_2) -> Tuple[float, float]:
-    """ Average over X's and Y's of vertices in a polygon will give us the centeroid of the polygon. """
-    xs = [v.x().to_double() for v in poly.vertices()]
-    ys = [v.y().to_double() for v in poly.vertices()]
-    return sum(xs) / len(xs), sum(ys) / len(ys)
-
-
-# ---------------------------------------------------------------------------
-# Adjacency discovery
-# ---------------------------------------------------------------------------
 
 def _find_shared_edges(
         partitions: List[Partition],
 ) -> List[Tuple[int, int, Tuple[float, float], Tuple[float, float]]]:
     """Discover edges shared between partition polygons.
 
-    Returns a list of ``(cell_i, cell_j, v1, v2)`` tuples, one per shared
-    edge.  ``cell_i < cell_j`` always.  ``v1`` and ``v2`` are the two
-    endpoints of the shared edge (order is canonical — sorted by
-    coordinate — so both callers see the same pair).
+    Returns ``(cell_i, cell_j, v1, v2)`` tuples with ``cell_i < cell_j``
+    and canonical (sorted) vertex ordering.
     """
-    # For each cell build a set of canonical edge keys: sorted vertex pairs.
     cell_edge_sets: List[set] = []
     for p in partitions:
         verts = [
@@ -192,21 +139,18 @@ def _find_shared_edges(
             )
             for v in p.polygon.vertices()
         ]
-        edges = set()
         n = len(verts)
-        for i in range(n):
-            e = tuple(sorted([verts[i], verts[(i + 1) % n]]))
-            edges.add(e)
-        cell_edge_sets.append(edges)
+        cell_edge_sets.append({
+            tuple(sorted([verts[i], verts[(i + 1) % n]]))
+            for i in range(n)
+        })
 
     boundaries: List[
         Tuple[int, int, Tuple[float, float], Tuple[float, float]]
     ] = []
     for i in range(len(partitions)):
         for j in range(i + 1, len(partitions)):
-            shared = cell_edge_sets[i] & cell_edge_sets[j]
-            for edge in shared:
-                v1, v2 = edge
+            for v1, v2 in cell_edge_sets[i] & cell_edge_sets[j]:
                 boundaries.append((i, j, v1, v2))
     return boundaries
 
@@ -216,12 +160,7 @@ def _edge_inward_normal(
         v2: Tuple[float, float],
         poly: Pol2.Polygon_2,
 ) -> Optional[Tuple[float, float]]:
-    """Unit vector from the edge midpoint into the cell interior.
-
-    Probes both perpendicular directions and returns whichever one
-    lands inside the polygon. Returns ``None`` for degenerate edges or
-    when neither probe is inside (e.g. polygon orientation is weird).
-    """
+    """Unit vector from the edge midpoint into the cell interior, or None."""
     dx, dy = v2[0] - v1[0], v2[1] - v1[1]
     length = math.hypot(dx, dy)
     if length < 1e-12:
@@ -248,18 +187,13 @@ def _max_valid_inset(
 ) -> Optional[Tuple[float, float]]:
     """Largest valid inset along ``(nx_, ny_)`` up to ``r``, or ``None``.
 
-    Tries a decreasing sequence of fractions of ``r``. Accepts the first
-    candidate that is inside ``poly`` and (if a checker is supplied)
-    checker-valid. Returns the resulting point, or ``None`` if none work.
-
-    Allowing sub-``r`` insets handles decomposition artifacts — thin
-    slivers narrower than ``r`` that a robot physically transits without
-    ever needing 2r of clearance on both sides. For dead-end pockets in
-    larger cells, the ``_has_2r_escape`` check below catches them
+    Tries a decreasing sequence of fractions of ``r``. Allowing sub-``r``
+    insets handles decomposition artifacts — thin slivers narrower than
+    ``r`` that a robot physically transits without ever needing 2r of
+    clearance on both sides. ``_has_2r_escape`` catches dead-end pockets
     separately.
     """
-    fractions = (1.0, 0.75, 0.5, 0.35, 0.25, 0.15, 0.1, 0.05, 0.025, 0.01)
-    for frac in fractions:
+    for frac in (1.0, 0.75, 0.5, 0.35, 0.25, 0.15, 0.1, 0.05, 0.025, 0.01):
         cx = px + frac * robot_radius * nx_
         cy = py + frac * robot_radius * ny_
         if not _point_in_polygon(poly, cx, cy):
@@ -281,16 +215,12 @@ def _has_2r_escape(
         n_dirs: int = 8,
         n_steps: int = 5,
 ) -> bool:
-    """True if a 2r-length straight line from ``(x, y)`` stays valid.
+    """True iff a 2r-length straight line from ``(x, y)`` stays valid.
 
-    Tests ``n_dirs`` evenly spaced directions. For each, samples
-    ``n_steps`` interior points along the segment; if all are inside
-    the polygon and checker-valid, the direction is an escape.
-
-    This distinguishes dead-end pockets (no 2r line fits anywhere — e.g.
-    the triangle wedged above an inflated obstacle corner) from narrow
-    decomposition slivers, whose lengthwise direction easily admits a 2r
-    straight line.
+    Tests ``n_dirs`` evenly spaced directions. Distinguishes dead-end
+    pockets (no 2r line fits anywhere — e.g. a triangle wedged above an
+    inflated-obstacle corner) from narrow decomposition slivers whose
+    lengthwise direction easily admits a 2r straight line.
     """
     d = 2.0 * robot_radius
     for k in range(n_dirs):
@@ -324,13 +254,12 @@ def _sample_valid_insets(
         checker,
         samples: int,
 ) -> List[Optional[Tuple[Tuple[float, float], Tuple[float, float]]]]:
-    """For each sample index along the edge, return the tangent-shifted
-    (inset_i, inset_j) pair if it is valid, else ``None``.
+    """For each sample index along the edge, the tangent-shifted
+    ``(inset_i, inset_j)`` pair if valid, else ``None``.
 
-    Validity requires: per-side ``_max_valid_inset`` succeeds, the tangent-
-    shifted variant stays inside both polygons and checker-valid, and both
-    insets have a 2r straight-line escape inside their cell (not a
-    dead-end pocket).
+    Validity requires per-side ``_max_valid_inset`` success, the
+    tangent-shifted variant staying inside both polygons and
+    checker-valid, and both insets admitting a 2r straight-line escape.
     """
     ni = _edge_inward_normal(v1, v2, poly_i)
     nj = _edge_inward_normal(v1, v2, poly_j)
@@ -338,34 +267,32 @@ def _sample_valid_insets(
         return [None] * samples
 
     tlen = math.hypot(v2[0] - v1[0], v2[1] - v1[1])
-    if tlen > 1e-12:
-        tx = (v2[0] - v1[0]) / tlen
-        ty = (v2[1] - v1[1]) / tlen
-    else:
-        tx = ty = 0.0
+    tx = (v2[0] - v1[0]) / tlen if tlen > 1e-12 else 0.0
+    ty = (v2[1] - v1[1]) / tlen if tlen > 1e-12 else 0.0
     off = robot_radius * _PORT_TANGENT_OFFSET
+
+    def _ok(poly, pt):
+        return _point_in_polygon(poly, pt[0], pt[1]) and (
+            checker is None
+            or checker.is_point_valid(Point_2(FT(pt[0]), FT(pt[1])))
+        )
 
     entries: List[
         Optional[Tuple[Tuple[float, float], Tuple[float, float]]]
     ] = [None] * samples
-
     for k in range(samples):
         t = k / (samples - 1)
         px = v1[0] + t * (v2[0] - v1[0])
         py = v1[1] + t * (v2[1] - v1[1])
-        pi = _max_valid_inset(
-            px, py, ni[0], ni[1], poly_i, robot_radius, checker,
-        )
+        pi = _max_valid_inset(px, py, ni[0], ni[1], poly_i, robot_radius, checker)
         if pi is None:
             continue
-        pj = _max_valid_inset(
-            px, py, nj[0], nj[1], poly_j, robot_radius, checker,
-        )
+        pj = _max_valid_inset(px, py, nj[0], nj[1], poly_j, robot_radius, checker)
         if pj is None:
             continue
 
         # Tangent offset: shift pi and pj in opposite directions along
-        # the shared edge so opposing insets are NOT directly across
+        # the shared edge so the two insets are NOT directly across
         # from each other. Without this, both sides inset by exactly r
         # along the perpendicular and sit exactly 2r apart, which
         # discopygal's verify_paths reports as a tangent-disc collision
@@ -373,24 +300,8 @@ def _sample_valid_insets(
         if off > 0.0:
             pi_shift = (pi[0] + tx * off, pi[1] + ty * off)
             pj_shift = (pj[0] - tx * off, pj[1] - ty * off)
-            if (
-                _point_in_polygon(poly_i, pi_shift[0], pi_shift[1])
-                and (
-                    checker is None
-                    or checker.is_point_valid(
-                        Point_2(FT(pi_shift[0]), FT(pi_shift[1]))
-                    )
-                )
-                and _point_in_polygon(poly_j, pj_shift[0], pj_shift[1])
-                and (
-                    checker is None
-                    or checker.is_point_valid(
-                        Point_2(FT(pj_shift[0]), FT(pj_shift[1]))
-                    )
-                )
-            ):
-                pi = pi_shift
-                pj = pj_shift
+            if _ok(poly_i, pi_shift) and _ok(poly_j, pj_shift):
+                pi, pj = pi_shift, pj_shift
 
         if not _has_2r_escape(pi[0], pi[1], poly_i, robot_radius, checker):
             continue
@@ -403,8 +314,8 @@ def _sample_valid_insets(
 def _contiguous_runs(
         entries: List[Optional[Tuple[Tuple[float, float], Tuple[float, float]]]],
 ) -> List[Tuple[int, int]]:
-    """Return ``(start, end)`` (inclusive) index pairs for each maximal run
-    of non-``None`` sample indices."""
+    """Return ``(start, end)`` (inclusive) index pairs for each maximal
+    run of non-``None`` sample indices."""
     runs: List[Tuple[int, int]] = []
     n = len(entries)
     cur = -1
@@ -429,48 +340,30 @@ def _validated_port_positions(
     """Place **one or more** ports along a shared edge.
 
     Long edges — common in grid-decomposed scenes where two large open
-    cells share a wall many times the robot radius — benefit from having
-    multiple ports in parallel: MCF sees each port as an independent
-    transit slot, so the per-timestep flow across that wall is no longer
+    cells share a wall many times the robot radius — benefit from
+    multiple parallel ports: MCF sees each port as an independent
+    transit slot, so per-timestep flow across that wall is no longer
     bottlenecked by a single entry point.
 
-    Algorithm
-    ---------
-    1. Densely sample the edge; for each sample, compute the tangent-
-       shifted ``(inset_i, inset_j)`` pair (``_sample_valid_insets``).
-    2. Group into maximal contiguous runs of valid samples.
-    3. For each run, compute how many ports fit with a minimum along-
-       edge spacing of ``_MIN_PORT_SPACING_R * r``. Distribute them at
-       uniform ``t`` within the run and snap each to the nearest valid
-       sample.
+    Steps: densely sample the edge, group into maximal contiguous runs
+    of valid samples, trim each run by the corner margin, and
+    distribute ports within each run at the minimum along-edge spacing.
 
-    Returns a list of ``(midpoint, inset_i, inset_j)`` tuples — possibly
-    empty when no point on the edge admits a valid inset on both sides.
+    Returns ``(midpoint, inset_i, inset_j)`` tuples — possibly empty.
     """
     edge_len = math.hypot(v2[0] - v1[0], v2[1] - v1[1])
     if edge_len < 1e-12:
         return []
 
-    # Resolution: enough samples that a port spacing of 0.5r is well
-    # resolved along the edge. Minimum 21 samples so short edges still
-    # get a centre probe.
     samples = max(21, int(edge_len / (0.5 * robot_radius)) + 1)
-
     entries = _sample_valid_insets(
         v1, v2, poly_i, poly_j, robot_radius, checker, samples,
     )
 
-    # Trim the sampled edge by an end margin so ports never land on top
-    # of an edge endpoint. Two different shared edges of the same cell
-    # meet at such endpoints, and corner-adjacent ports on the two
-    # edges can end up arbitrarily close in cell interior. We use
-    # min(margin, 40% of edge length / 2) so that short edges still
-    # admit a centre port.
-    margin = _PORT_EDGE_END_MARGIN_R * robot_radius
-    max_margin = 0.4 * edge_len
-    if margin > max_margin:
-        margin = max_margin
-    t_margin = margin / edge_len if edge_len > 0 else 0.0
+    # Trim by end margin so ports never sit on an edge endpoint. Short
+    # edges still admit a centre port: cap the margin at 40% of length.
+    margin = min(_PORT_EDGE_END_MARGIN_R * robot_radius, 0.4 * edge_len)
+    t_margin = margin / edge_len
     k_margin_start = int(math.ceil(t_margin * (samples - 1)))
     k_margin_end = int((1.0 - t_margin) * (samples - 1))
 
@@ -480,7 +373,6 @@ def _validated_port_positions(
     ] = []
 
     for (s, e) in _contiguous_runs(entries):
-        # Clip the run against the edge-end margin.
         s = max(s, k_margin_start)
         e = min(e, k_margin_end)
         if s > e:
@@ -488,22 +380,17 @@ def _validated_port_positions(
         t_s = s / (samples - 1)
         t_e = e / (samples - 1)
         run_len = edge_len * (t_e - t_s)
-
-        # Ports fit: n points with (n-1) gaps of >= min_spacing => n-1 <=
-        # run_len / min_spacing. Always at least 1.
+        # Ports fit: n points with n-1 gaps of >= min_spacing.
         n_ports = max(1, 1 + int(run_len // min_spacing))
-
         for p in range(n_ports):
-            if n_ports == 1:
-                t_target = (t_s + t_e) / 2.0
-            else:
-                t_target = t_s + (t_e - t_s) * (p / (n_ports - 1))
-            k = round(t_target * (samples - 1))
-            k = max(s, min(e, k))
-            if entries[k] is None:
-                continue
+            t_target = (
+                (t_s + t_e) / 2.0 if n_ports == 1
+                else t_s + (t_e - t_s) * (p / (n_ports - 1))
+            )
+            k = max(s, min(e, round(t_target * (samples - 1))))
             pair = entries[k]
-            assert pair is not None  # satisfied by the check above
+            if pair is None:
+                continue
             inset_i, inset_j = pair
             t_mid = k / (samples - 1)
             midpoint = (
@@ -511,66 +398,17 @@ def _validated_port_positions(
                 v1[1] + t_mid * (v2[1] - v1[1]),
             )
             out.append((midpoint, inset_i, inset_j))
-
     return out
 
 
 def _find_containing_cell(
-        partitions: List[Partition],
-        x: float,
-        y: float,
+        partitions: List[Partition], x: float, y: float,
 ) -> Optional[int]:
-    """Return the index of the first partition containing ``(x, y)``."""
+    """Index of the first partition containing ``(x, y)``."""
     for idx, p in enumerate(partitions):
         if _point_in_polygon(p.polygon, x, y):
             return idx
     return None
-
-
-# ---------------------------------------------------------------------------
-# Edge-wiring strategies
-# ---------------------------------------------------------------------------
-
-def _add_pairwise_edges(
-        G: nx.Graph,
-        partitions: List[Partition],
-        cell_incident: Dict[int, List[str]],
-        node_positions: Dict[str, Tuple[float, float]],
-) -> None:
-    """Connect every pair of incident nodes within each cell (O(m²))."""
-    for ci, nodes in cell_incident.items():
-        cap = partitions[ci].density
-        for a in range(len(nodes)):
-            for b in range(a + 1, len(nodes)):
-                na, nb = nodes[a], nodes[b]
-                ax, ay = node_positions[na]
-                bx, by = node_positions[nb]
-                cost = math.hypot(ax - bx, ay - by)
-                G.add_edge(na, nb, cell_id=ci, capacity=cap, cost=cost)
-
-
-def _add_star_edges(
-        G: nx.Graph,
-        partitions: List[Partition],
-        cell_incident: Dict[int, List[str]],
-        node_positions: Dict[str, Tuple[float, float]],
-) -> None:
-    """Connect each incident node to a virtual hub at the cell centroid."""
-    for ci, nodes in cell_incident.items():
-        if not nodes:
-            continue
-        cap = partitions[ci].density
-        hub = f"hub_{ci}"
-        cx, cy = _polygon_centroid(partitions[ci].polygon)
-        G.add_node(hub, kind="hub", cell_id=ci)
-        node_positions[hub] = (cx, cy)
-        cell_incident[ci].append(hub)
-        for n in nodes:
-            if n == hub:
-                continue
-            nx_, ny_ = node_positions[n]
-            cost = math.hypot(nx_ - cx, ny_ - cy)
-            G.add_edge(n, hub, cell_id=ci, capacity=cap, cost=cost)
 
 
 # ---------------------------------------------------------------------------
@@ -582,40 +420,18 @@ def build_high_level_graph(
         robot_starts: List[Tuple[float, float]],
         robot_goals: List[Tuple[float, float]],
         robot_radius: float,
-        topology: str = "pairwise",
         checker=None,
 ) -> HighLevelGraph:
     """Build the high-level cell graph for MCF routing.
 
     Args
     ----
-    partitions :
-        Trapezoidal cells from ``partition_free_space_vertical`` (step 2).
-    robot_starts :
-        ``[(x, y), …]`` start position for each robot.
-    robot_goals :
-        ``[(x, y), …]`` goal position for each robot.
-    robot_radius :
-        Disc robot radius. Used to shrink the cell by ``r`` near each
-        shared edge when placing ports: the port is located at a point
-        on the edge where an ``r``-inward inset stays inside both
-        adjacent cells (so two robots crossing the same shared edge can
-        sit ``2r`` apart without collision).
-    topology :
-        ``"pairwise"`` — O(m²) edges per cell, one hop per traversal.
-        ``"star"`` — O(m) edges per cell, two hops per traversal.
-    checker :
-        Optional ``ObjectCollisionDetection`` for authoritative free-
-        space tests against inflated obstacles. When supplied, port
-        positions are additionally verified to be checker-valid on
-        both sides — essential for non-convex cells from grid-only
-        partitioning where the polygon chord-approximates an arc.
+    partitions : free-space cells from step 2.
+    robot_starts, robot_goals : ``(x, y)`` per robot.
+    robot_radius : disc robot radius.
+    checker : optional ``ObjectCollisionDetection`` used to validate port
+        insets against the true (arc-exact) inflated obstacles.
     """
-    if topology not in ("pairwise", "star"):
-        raise ValueError(
-            f"topology must be 'pairwise' or 'star', got {topology!r}"
-        )
-
     G = nx.Graph()
     node_positions: Dict[str, Tuple[float, float]] = {}
     cell_incident: Dict[int, List[str]] = {
@@ -626,50 +442,31 @@ def build_high_level_graph(
     }
 
     # ---- Boundary port nodes ----
-    # For each shared edge, search along the edge for points whose
-    # r-inward inset is valid in both neighbouring cells. Long edges
-    # (grid decomposition between large open cells) get multiple ports
-    # spaced by ``_MIN_PORT_SPACING_R * r`` so MCF sees parallel
-    # transit capacity instead of bottlenecking the whole wall on a
-    # single entry. Edges with no usable subsegment are skipped.
-    #
-    # Cross-edge proximity: a single cell can share edges with many
-    # neighbours (corner cells in grid decomposition touch 3+ cells),
-    # and two ports placed near a shared corner on adjacent shared
-    # edges can land arbitrarily close in the cell interior — far
-    # below 2r, which breaks the joint PRM's pairwise-separation
-    # guarantee. We track already-accepted insets per cell and reject
-    # any candidate whose inset in *either* adjacent cell is within
-    # ``_MIN_PORT_SPACING_R * r`` of an existing inset in that cell.
-    # Precomputed insets go into ``cell_boundary_ports`` so path
-    # realisation can look them up without rerunning the search.
-    boundaries = _find_shared_edges(partitions)
-    port_id = 0
+    # Tracks already-placed insets per cell so two ports on different
+    # shared edges of the same cell can't land within the minimum
+    # spacing of each other — that would break the joint PRM's 2r
+    # pairwise separation at cell corners.
     per_cell_insets: Dict[int, List[Tuple[float, float]]] = {
         i: [] for i in range(len(partitions))
     }
     min_inset_sep_sq = (_MIN_PORT_SPACING_R * robot_radius) ** 2
 
-    def _too_close_to_existing(cell: int, point: Tuple[float, float]) -> bool:
-        for (qx, qy) in per_cell_insets[cell]:
+    def _too_close(cell: int, point: Tuple[float, float]) -> bool:
+        for qx, qy in per_cell_insets[cell]:
             dx = point[0] - qx
             dy = point[1] - qy
             if dx * dx + dy * dy < min_inset_sep_sq:
                 return True
         return False
 
-    for (ci, cj, v1, v2) in boundaries:
-        port_specs = _validated_port_positions(
+    port_id = 0
+    for (ci, cj, v1, v2) in _find_shared_edges(partitions):
+        for midpoint, inset_i, inset_j in _validated_port_positions(
             v1, v2,
-            partitions[ci].polygon,
-            partitions[cj].polygon,
-            robot_radius,
-            checker,
-        )
-        for midpoint, inset_i, inset_j in port_specs:
-            if _too_close_to_existing(ci, inset_i):
-                continue
-            if _too_close_to_existing(cj, inset_j):
+            partitions[ci].polygon, partitions[cj].polygon,
+            robot_radius, checker,
+        ):
+            if _too_close(ci, inset_i) or _too_close(cj, inset_j):
                 continue
             node = f"port_{port_id}"
             G.add_node(node, kind="port", cell_pair=(ci, cj))
@@ -682,35 +479,41 @@ def build_high_level_graph(
             per_cell_insets[cj].append(inset_j)
             port_id += 1
 
-    # ---- Robot start nodes ----
+    # ---- Robot start / goal nodes ----
     start_cells: Dict[int, int] = {}
     for r, (sx, sy) in enumerate(robot_starts):
-        node = f"start_{r}"
         ci = _find_containing_cell(partitions, sx, sy)
         if ci is None:
             continue
+        node = f"start_{r}"
         G.add_node(node, kind="start", robot=r)
         node_positions[node] = (sx, sy)
         cell_incident[ci].append(node)
         start_cells[r] = ci
 
-    # ---- Robot goal nodes ----
     goal_cells: Dict[int, int] = {}
     for r, (gx, gy) in enumerate(robot_goals):
-        node = f"goal_{r}"
         ci = _find_containing_cell(partitions, gx, gy)
         if ci is None:
             continue
+        node = f"goal_{r}"
         G.add_node(node, kind="goal", robot=r)
         node_positions[node] = (gx, gy)
         cell_incident[ci].append(node)
         goal_cells[r] = ci
 
-    # ---- Wire edges according to topology ----
-    if topology == "pairwise":
-        _add_pairwise_edges(G, partitions, cell_incident, node_positions)
-    else:
-        _add_star_edges(G, partitions, cell_incident, node_positions)
+    # ---- Pairwise edges: every pair of nodes incident to the same cell ----
+    for ci, nodes in cell_incident.items():
+        cap = partitions[ci].density
+        for a in range(len(nodes)):
+            ax, ay = node_positions[nodes[a]]
+            for b in range(a + 1, len(nodes)):
+                bx, by = node_positions[nodes[b]]
+                G.add_edge(
+                    nodes[a], nodes[b],
+                    cell_id=ci, capacity=cap,
+                    cost=math.hypot(ax - bx, ay - by),
+                )
 
     return HighLevelGraph(
         graph=G,
@@ -719,13 +522,8 @@ def build_high_level_graph(
         cell_incident_nodes=cell_incident,
         start_cells=start_cells,
         goal_cells=goal_cells,
-        topology=topology,
     )
 
-
-# ---------------------------------------------------------------------------
-# Time-horizon estimation
-# ---------------------------------------------------------------------------
 
 def estimate_time_horizon(
         hlg: HighLevelGraph,
@@ -734,12 +532,9 @@ def estimate_time_horizon(
 ) -> int:
     """Auto-compute time horizon from shortest hop-counts.
 
-    For each robot, compute the unweighted shortest-path length (number of
-    hops) from its start node to its goal node in the high-level graph.
-    The time horizon is ``max(min_horizon, congestion_factor × max_hops)``.
-
-    This mirrors ``multi_robot_flow_solver._estimate_time_horizon`` which
-    uses ``max(10, manhattan_distance × 2)``.
+    For each robot, the unweighted shortest-path length (hops) from its
+    start to its goal in the high-level graph. The returned horizon is
+    ``max(min_horizon, congestion_factor * max_hops)``.
     """
     max_hops = 0
     for r in hlg.start_cells:
@@ -748,10 +543,7 @@ def estimate_time_horizon(
         if src not in hlg.graph or dst not in hlg.graph:
             continue
         try:
-            hops = nx.shortest_path_length(hlg.graph, src, dst)
-            max_hops = max(max_hops, hops)
+            max_hops = max(max_hops, nx.shortest_path_length(hlg.graph, src, dst))
         except nx.NetworkXNoPath:
             continue
     return max(min_horizon, int(congestion_factor * max_hops))
-
-

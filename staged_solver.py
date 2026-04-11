@@ -110,7 +110,7 @@ def _node_position_in_cell(
 
     - ``port_N`` → the precomputed per-cell inset from
       ``hlg.cell_boundary_ports[cell_id][N]``.
-    - ``start_*`` / ``goal_*`` / ``hub_*`` → the raw position from
+    - ``start_*`` / ``goal_*`` → the raw position from
       ``hlg.node_positions`` (already inside the cell).
     - unknown / missing → ``None``.
     """
@@ -123,53 +123,11 @@ def _node_position_in_cell(
     return hlg.node_positions.get(node_name)
 
 
-def _fallback_dst_position(
-    hlg: HighLevelGraph, dst_node: str,
-) -> Optional[Tuple[float, float]]:
-    """Best-effort target for a fallback transit (edge with no cell_id).
-
-    For a port, return any cell's precomputed inset for it (since we
-    don't know which cell the transit is going through, any side is
-    acceptable). For start/goal/hub, return the raw position.
-    """
-    if dst_node.startswith("port_"):
-        try:
-            port_id = int(dst_node[len("port_"):])
-        except ValueError:
-            return hlg.node_positions.get(dst_node)
-        for ports in hlg.cell_boundary_ports.values():
-            if port_id in ports:
-                return ports[port_id]
-    return hlg.node_positions.get(dst_node)
-
-
-def _edge_cell_id(
-    hlg: HighLevelGraph, src: str, dst: str,
-) -> Optional[int]:
-    """cell_id attribute of the HLG edge from ``src`` to ``dst``.
-
-    For star topology, edges go ``port → hub → port``; we resolve
-    ``src → dst`` by looking for a hub neighbour of ``src`` that also
-    neighbours ``dst`` and returning that edge's cell_id.
-    """
-    g = hlg.graph
-    if g.has_edge(src, dst):
-        return g.edges[src, dst].get("cell_id")
-    for nb in g.neighbors(src):
-        if nb.startswith("hub_") and g.has_edge(nb, dst):
-            return g.edges[src, nb].get("cell_id")
-    return None
-
-
 class StagedSolver(Solver):
     """Staged multi-robot solver following the ``plan.tex`` pipeline.
 
     Parameters
     ----------
-    topology : str
-        High-level graph topology: ``"pairwise"`` or ``"star"``.
-    flow_strategy : str
-        MCF solving strategy: ``"ilp"``, ``"sequential"``, or ``"priority"``.
     num_samples : int
         PRM samples per cell.
     k_nearest : int
@@ -187,8 +145,6 @@ class StagedSolver(Solver):
 
     def __init__(
         self,
-        topology: str = "pairwise",
-        flow_strategy: str = "sequential",
         num_samples: int = 50,
         k_nearest: int = 8,
         time_horizon: Optional[int] = None,
@@ -197,8 +153,6 @@ class StagedSolver(Solver):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.topology = topology
-        self.flow_strategy = flow_strategy
         self.num_samples = num_samples
         self.k_nearest = k_nearest
         self.time_horizon = time_horizon
@@ -231,12 +185,6 @@ class StagedSolver(Solver):
     @classmethod
     def get_arguments(cls):
         return {
-            "topology": ("Graph topology (pairwise/star):", "pairwise", str),
-            "flow_strategy": (
-                "MCF strategy (ilp/sequential/priority):",
-                "sequential",
-                str,
-            ),
             "num_samples": ("PRM samples per cell:", 50, int),
             "k_nearest": ("PRM k-nearest neighbours:", 8, int),
             "time_horizon": ("MCF time horizon (0=auto):", 0, int),
@@ -290,7 +238,7 @@ class StagedSolver(Solver):
             self._collision_checker = None
 
         # --- Step 5: high-level graph ---
-        log(f"Step 5: building high-level graph (topology={self.topology})...")
+        log("Step 5: building high-level graph...")
         robot_starts = [
             (r.start.x().to_double(), r.start.y().to_double()) for r in robots
         ]
@@ -300,7 +248,6 @@ class StagedSolver(Solver):
 
         hlg = build_high_level_graph(
             partitions, robot_starts, robot_goals, robot_radius,
-            topology=self.topology,
             checker=self._collision_checker,
         )
         self._hlg = hlg
@@ -356,12 +303,9 @@ class StagedSolver(Solver):
 
         # --- Step 6: MCF ---
         T = self.time_horizon or estimate_time_horizon(hlg)
-        log(f"Step 6: solving MCF (strategy={self.flow_strategy}, T={T})...")
+        log(f"Step 6: solving MCF (T={T})...")
 
-        mcf_sol = solve_mcf(
-            hlg, num_robots, T,
-            strategy=self.flow_strategy, verbose=verbose,
-        )
+        mcf_sol = solve_mcf(hlg, num_robots, T, verbose=verbose)
         if mcf_sol is None:
             log("  MCF found no solution")
             return PathCollection()
@@ -499,14 +443,11 @@ class StagedSolver(Solver):
         num_robots = len(current_pos)
 
         # Classify robots: holding (src == dst), or transiting via a
-        # specific cell (identified by edge cell_id in the HLG). Rare
-        # fallback transits (no cell_id — typically star-topology quirks)
-        # are skipped to a straight-line holder segment.
+        # specific cell (identified by edge cell_id in the HLG).
         cell_transitions: Dict[int, List[Tuple[int, str, str]]] = defaultdict(
             list,
         )
         holding: List[int] = []
-        fallback: List[Tuple[int, str]] = []
 
         for r in range(num_robots):
             src = mcf_sol[r][t]
@@ -514,11 +455,8 @@ class StagedSolver(Solver):
             if src == dst:
                 holding.append(r)
                 continue
-            cell_id = _edge_cell_id(hlg, src, dst)
-            if cell_id is not None and cell_id < len(partitions):
-                cell_transitions[cell_id].append((r, src, dst))
-            else:
-                fallback.append((r, dst))
+            cell_id = hlg.graph.edges[src, dst].get("cell_id")
+            cell_transitions[cell_id].append((r, src, dst))
 
         # Holders sit in their current cell for this timestep; we locate
         # them by point-in-polygon so their positions can be pinned in
@@ -534,9 +472,6 @@ class StagedSolver(Solver):
         timestep_segments: Dict[int, List[Tuple[float, float]]] = {
             r: [current_pos[r]] for r in holding
         }
-        for r, dst in fallback:
-            dst_pos = _fallback_dst_position(hlg, dst) or current_pos[r]
-            timestep_segments[r] = [current_pos[r], dst_pos]
 
         for cell_id, transitions in cell_transitions.items():
             partition = partitions[cell_id]

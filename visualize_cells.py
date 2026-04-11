@@ -268,7 +268,6 @@ def draw_cells(
 def visualize(
     scene_path: str,
     density: int = 100,
-    topology: str = "pairwise",
     show_ports: bool = True,
     show_cell_ids: bool = True,
     show_robots: bool = True,
@@ -294,7 +293,6 @@ def visualize(
     ]
     hlg = build_high_level_graph(
         partitions, robot_starts, robot_goals, robot_radius,
-        topology=topology,
     )
 
     num_ports = sum(len(p) for p in hlg.cell_boundary_ports.values()) // 2
@@ -334,10 +332,6 @@ def main(argv=None) -> int:
         "--density", type=int, default=100,
         help="max_cell_density passed to the partitioner (default: 100)",
     )
-    p.add_argument(
-        "--topology", choices=["pairwise", "star"], default="pairwise",
-        help="High-level graph topology (default: pairwise)",
-    )
     p.add_argument("--no-ports", action="store_true", help="Hide ports")
     p.add_argument("--no-ids", action="store_true", help="Hide cell ids")
     p.add_argument("--no-robots", action="store_true", help="Hide start/goal")
@@ -357,7 +351,6 @@ def main(argv=None) -> int:
     visualize(
         args.scene,
         density=args.density,
-        topology=args.topology,
         show_ports=not args.no_ports,
         show_cell_ids=not args.no_ids,
         show_robots=not args.no_robots,

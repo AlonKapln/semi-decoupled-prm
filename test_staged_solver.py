@@ -38,25 +38,19 @@ SCENES_DIR = os.path.join(os.path.dirname(__file__), "scenes")
 
 def _run_solver(
     scene: Scene,
-    topology: str = "pairwise",
-    strategy: str = "sequential",
     num_samples: int = 40,
     k_nearest: int = 8,
     seed: int = 42,
     time_horizon=None,
     max_cell_density: int = 100,
-    partition_mode: str = "grid",
     verbose: bool = True,
 ) -> PathCollection:
     solver = StagedSolver(
-        topology=topology,
-        flow_strategy=strategy,
         num_samples=num_samples,
         k_nearest=k_nearest,
         time_horizon=time_horizon,
         prm_seed=seed,
         max_cell_density=max_cell_density,
-        partition_mode=partition_mode,
     )
     solver.verbose = verbose
     solver.load_scene(scene)
@@ -219,10 +213,8 @@ def test_crossing():
     """2 robots crossing with central obstacle."""
     print("\n=== Test: 2-robot crossing with obstacle ===")
     scene = create_crossing_scene()
-    for topo in ("pairwise", "star"):
-        print(f"\n  topology={topo}")
-        pc = _run_solver(scene, topology=topo)
-        _check_paths(scene, pc, f"crossing/{topo}")
+    pc = _run_solver(scene)
+    _check_paths(scene, pc, "crossing")
 
 
 def test_corridor():
@@ -237,7 +229,7 @@ def test_three_robots():
     """3 robots around obstacle."""
     print("\n=== Test: 3 robots with obstacle ===")
     scene = create_three_robot_scene()
-    pc = _run_solver(scene, strategy="priority", num_samples=40)
+    pc = _run_solver(scene, num_samples=40)
     _check_paths(scene, pc, "3-robot")
 
 
