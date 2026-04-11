@@ -4,20 +4,25 @@ Steps 7–8 of ``plan.tex``.  Orchestrates the full pipeline:
 
 1. ``free_space_builder.construct_free_space`` — Minkowski-inflated
    arrangement (step 1).
-2. ``scene_partitioning.partition_free_space_vertical`` — trapezoidal
-   decomposition into convex cells with per-cell density (steps 2–3).
+2. ``scene_partitioning.partition_free_space_grid`` — grid decomposition
+   of free space into convex-or-near-convex cells with per-cell density
+   (steps 2–3).
 3. ``high_level_graph.build_high_level_graph`` — cell-adjacency graph
-   with boundary ports, robot starts/goals (step 5).
-4. ``cell_joint_prm.build_cell_roadmap`` — joint k-robot PRM per cell
-   (step 4).
-5. ``high_level_graph.prune_by_prm`` — remove infeasible high-level
-   edges.
-6. ``mcf_solver.solve_mcf`` — multi-commodity flow routing (step 6).
-7. **Path realisation** — for each robot, walk its MCF node sequence,
-   query the cell PRM for a geometric path between consecutive port
-   configs, and concatenate into a discopygal ``Path``.
-8. **Temporal stitching** — insert hold ``PathPoint``s at ports so all
-   robots are time-synchronised and the ``PathCollection`` is consistent.
+   with boundary ports, robot starts/goals; also precomputes a
+   per-cell inset for every port so path realisation can use it
+   directly (step 5).
+4. ``mcf_solver.solve_mcf`` — multi-commodity flow routing (step 6).
+5. **Path realisation** — for each timestep, build a fresh ad-hoc
+   joint PRM per active cell via ``cell_joint_prm.build_adhoc_roadmap``
+   and extract a joint path entry→exit.
+6. **Temporal stitching** — pad segments so all robots' ``Path``s share
+   a common length.
+
+Note: no pre-built per-cell PRM. The ad-hoc PRM at path realisation
+does all joint sampling — the pre-build step would be redundant and
+strictly worse (it couldn't know which robots coexist in a cell at
+each timestep, so it couldn't pin holders or include correct transit
+entries/exits).
 
 Path realisation (step 7) — ad-hoc per-(cell, timestep) joint PRM
 ------------------------------------------------------------------
@@ -66,7 +71,6 @@ numbers of waypoints are right-padded with a repeat of their final
 position (a hold), so every robot's ``Path`` has the same length.
 """
 
-import math
 import random
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
@@ -79,23 +83,16 @@ from discopygal.geometry_utils.collision_detection import ObjectCollisionDetecti
 from discopygal.solvers_infra import PathCollection, PathPoint, Path
 from discopygal.solvers_infra.Solver import Solver
 
-from cell_joint_prm import (
-    CellRoadmap,
-    build_adhoc_roadmap,
-    build_cell_roadmap,
-)
+from cell_joint_prm import build_adhoc_roadmap
 from high_level_graph import (
     HighLevelGraph,
     build_high_level_graph,
     estimate_time_horizon,
-    prune_by_prm,
 )
 from mcf_solver import MCFSolution, solve_mcf
 from partition import Partition
-from scene_partitioning import (
-    partition_free_space_grid,
-    partition_free_space_vertical,
-)
+from scene_partitioning import partition_free_space_grid
+from visualize_cells import draw_cells
 
 
 def _point_in_partition(partition: Partition, x: float, y: float) -> bool:
@@ -104,128 +101,64 @@ def _point_in_partition(partition: Partition, x: float, y: float) -> bool:
     return side != Bounded_side.ON_UNBOUNDED_SIDE
 
 
-def _polygon_vertices(partition: Partition) -> List[Tuple[float, float]]:
-    return [
-        (v.x().to_double(), v.y().to_double())
-        for v in partition.polygon.vertices()
-    ]
-
-
-def _inset_toward_centroid(
-    partition: Partition,
-    position: Tuple[float, float],
-    robot_radius: float,
-) -> Tuple[float, float]:
-    """Nudge a boundary position ``r`` into the cell interior.
-
-    Robust to non-convex partitions: finds the polygon edge closest to
-    ``position`` and steps ``r`` along its inward normal, verified by a
-    point-in-polygon test. Falls back to the vertex-average direction
-    only as a last resort.
-    """
-    poly = partition.polygon
-    verts = _polygon_vertices(partition)
-    n = len(verts)
-    px, py = position
-    if n == 0:
-        return (px, py)
-
-    # Locate the polygon edge closest to `position` (the "owning" edge).
-    best_idx = -1
-    best_d_sq = float("inf")
-    for i in range(n):
-        ax, ay = verts[i]
-        bx, by = verts[(i + 1) % n]
-        dx, dy = bx - ax, by - ay
-        lensq = dx * dx + dy * dy
-        if lensq <= 1e-24:
-            continue
-        s = ((px - ax) * dx + (py - ay) * dy) / lensq
-        s = max(0.0, min(1.0, s))
-        cx = ax + s * dx
-        cy = ay + s * dy
-        d_sq = (px - cx) ** 2 + (py - cy) ** 2
-        if d_sq < best_d_sq:
-            best_d_sq = d_sq
-            best_idx = i
-
-    if best_idx >= 0:
-        ax, ay = verts[best_idx]
-        bx, by = verts[(best_idx + 1) % n]
-        dx, dy = bx - ax, by - ay
-        edge_len = math.sqrt(dx * dx + dy * dy)
-        if edge_len > 1e-12:
-            nx_ = -dy / edge_len
-            ny_ = dx / edge_len
-            # Probe a small step along each perpendicular candidate.
-            eps = max(robot_radius * 0.25, 1e-6)
-            cand_plus = (px + eps * nx_, py + eps * ny_)
-            cand_minus = (px - eps * nx_, py - eps * ny_)
-            plus_inside = _point_in_partition(partition, *cand_plus)
-            minus_inside = _point_in_partition(partition, *cand_minus)
-            if plus_inside and not minus_inside:
-                sign = 1.0
-            elif minus_inside and not plus_inside:
-                sign = -1.0
-            elif plus_inside and minus_inside:
-                # Both sides "inside" (non-convex) — pick the side whose
-                # full r-step stays inside, preferring plus.
-                full_plus = (px + robot_radius * nx_,
-                             py + robot_radius * ny_)
-                full_minus = (px - robot_radius * nx_,
-                              py - robot_radius * ny_)
-                if _point_in_partition(partition, *full_plus):
-                    sign = 1.0
-                elif _point_in_partition(partition, *full_minus):
-                    sign = -1.0
-                else:
-                    sign = 1.0
-            else:
-                sign = None
-
-            if sign is not None:
-                # Shrink until the full step is inside (for tiny cells).
-                step = robot_radius
-                for _ in range(6):
-                    cand = (px + sign * step * nx_,
-                            py + sign * step * ny_)
-                    if _point_in_partition(partition, *cand):
-                        return cand
-                    step *= 0.5
-                return (px + sign * step * nx_,
-                        py + sign * step * ny_)
-
-    # Fallback: vertex-average direction.
-    cx_avg = sum(x for x, _ in verts) / n
-    cy_avg = sum(y for _, y in verts) / n
-    dx, dy = cx_avg - px, cy_avg - py
-    dist = math.sqrt(dx * dx + dy * dy)
-    if dist <= 1e-12:
-        return (px, py)
-    nudge = min(robot_radius, max(dist - 1e-6, 0.0))
-    return (px + (nudge / dist) * dx, py + (nudge / dist) * dy)
-
-
-def _inset_node_in_cell(
+def _node_position_in_cell(
     hlg: HighLevelGraph,
-    partition: Partition,
+    cell_id: int,
     node_name: str,
-    robot_radius: float,
 ) -> Optional[Tuple[float, float]]:
-    """Return the position used for an HLG node when entering/exiting a cell.
+    """Position of an HLG node *as seen from a specific cell*.
 
-    - ``port_*`` → inset the raw midpoint r toward the cell centroid so
-      the position is inside the cell and ≥ r from the shared edge.
-    - ``start_*`` / ``goal_*`` / ``hub_*`` → return the raw position as-is
-      (these are already inside the cell).
+    - ``port_N`` → the precomputed per-cell inset from
+      ``hlg.cell_boundary_ports[cell_id][N]``.
+    - ``start_*`` / ``goal_*`` / ``hub_*`` → the raw position from
+      ``hlg.node_positions`` (already inside the cell).
     - unknown / missing → ``None``.
     """
-    pos = hlg.node_positions.get(node_name)
-    if pos is None:
-        return None
     if node_name.startswith("port_"):
-        return _inset_toward_centroid(partition, pos, robot_radius)
-    return pos
+        try:
+            port_id = int(node_name[len("port_"):])
+        except ValueError:
+            return None
+        return hlg.cell_boundary_ports.get(cell_id, {}).get(port_id)
+    return hlg.node_positions.get(node_name)
+
+
+def _fallback_dst_position(
+    hlg: HighLevelGraph, dst_node: str,
+) -> Optional[Tuple[float, float]]:
+    """Best-effort target for a fallback transit (edge with no cell_id).
+
+    For a port, return any cell's precomputed inset for it (since we
+    don't know which cell the transit is going through, any side is
+    acceptable). For start/goal/hub, return the raw position.
+    """
+    if dst_node.startswith("port_"):
+        try:
+            port_id = int(dst_node[len("port_"):])
+        except ValueError:
+            return hlg.node_positions.get(dst_node)
+        for ports in hlg.cell_boundary_ports.values():
+            if port_id in ports:
+                return ports[port_id]
+    return hlg.node_positions.get(dst_node)
+
+
+def _edge_cell_id(
+    hlg: HighLevelGraph, src: str, dst: str,
+) -> Optional[int]:
+    """cell_id attribute of the HLG edge from ``src`` to ``dst``.
+
+    For star topology, edges go ``port → hub → port``; we resolve
+    ``src → dst`` by looking for a hub neighbour of ``src`` that also
+    neighbours ``dst`` and returning that edge's cell_id.
+    """
+    g = hlg.graph
+    if g.has_edge(src, dst):
+        return g.edges[src, dst].get("cell_id")
+    for nb in g.neighbors(src):
+        if nb.startswith("hub_") and g.has_edge(nb, dst):
+            return g.edges[src, nb].get("cell_id")
+    return None
 
 
 class StagedSolver(Solver):
@@ -245,14 +178,11 @@ class StagedSolver(Solver):
         MCF time horizon.  ``None`` = auto-compute.
     prm_seed : int or None
         RNG seed for reproducible PRM sampling.
-    partition_mode : str
-        ``"vertical"`` (default) — trapezoidal decomposition + grid refinement
-        via ``partition_free_space_vertical``. Produces small convex cells,
-        best for scenes with diagonal obstacles. ``"grid"`` — pure grid on the
-        raw free-space arrangement via ``partition_free_space_grid``. Produces
-        coarser, possibly non-convex cells with no narrow slivers, best for
-        warehouse/corridor scenes where vertical decomposition creates cells
-        narrower than 2r.
+    max_cell_density : int
+        Upper bound for per-cell density used by the grid refinement. Lower
+        values split large open regions into smaller cells (better joint-PRM
+        behaviour, more expensive HLG/MCF); higher values leave cells as
+        large as the free-space topology allows.
     """
 
     def __init__(
@@ -263,9 +193,7 @@ class StagedSolver(Solver):
         k_nearest: int = 8,
         time_horizon: Optional[int] = None,
         prm_seed: Optional[int] = None,
-        prm_prune: str = "False",
-        max_cell_density: int = 4,
-        partition_mode: str = "vertical",
+        max_cell_density: int = 100,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -275,20 +203,14 @@ class StagedSolver(Solver):
         self.k_nearest = k_nearest
         self.time_horizon = time_horizon
         self.prm_seed = prm_seed
-        self.prm_prune = eval(prm_prune)
         self.max_cell_density = max_cell_density
-        if partition_mode not in ("vertical", "grid"):
-            raise ValueError(
-                f"partition_mode must be 'vertical' or 'grid', got {partition_mode!r}"
-            )
-        self.partition_mode = partition_mode
 
         # Populated during solve for solver_viewer visualisation
         self._arrangement = None
         self._hlg = None
 
     def get_arrangement(self):
-        """Return the trapezoidal arrangement for solver_viewer display."""
+        """Return the free-space arrangement for solver_viewer display."""
         return self._arrangement
 
     def get_graph(self):
@@ -319,11 +241,7 @@ class StagedSolver(Solver):
             "k_nearest": ("PRM k-nearest neighbours:", 8, int),
             "time_horizon": ("MCF time horizon (0=auto):", 0, int),
             "prm_seed": ("PRM RNG seed (0=random):", 0, int),
-            "prm_prune": ("Prune infeasible HLG edges via PRM:", "False", str),
             "max_cell_density": ("Max cell density (grid refinement):", 100, int),
-            "partition_mode": (
-                "Partition mode (vertical/grid):", "grid", str,
-            ),
             **super().get_arguments(),
         }
 
@@ -346,27 +264,25 @@ class StagedSolver(Solver):
                 print(msg)
 
         # --- Step 1+2+3: free space → cells with density ---
-        log(
-            f"Step 1-3: building free space and decomposition "
-            f"(partition_mode={self.partition_mode})..."
+        log("Step 1-3: building free space and grid decomposition...")
+        partitions, arrangement = partition_free_space_grid(
+            scene, robot_radius, max_cell_density=self.max_cell_density,
         )
-        if self.partition_mode == "grid":
-            partitions, arrangement = partition_free_space_grid(
-                scene, robot_radius, max_cell_density=self.max_cell_density,
-            )
-        else:
-            partitions, arrangement = partition_free_space_vertical(
-                scene, robot_radius, max_cell_density=self.max_cell_density,
-            )
         self._arrangement = arrangement
         log(f"  {len(partitions)} cells")
 
-        # Scene-level collision checker used by the ad-hoc PRM to verify
-        # sampled configs and steered edges against the *true* inflated
-        # obstacle geometry (arcs included), complementing the polygonal
-        # containment test. Only enabled in grid mode since vertical-mode
-        # cells are convex and the polygonal approximation is exact there.
-        if self.partition_mode == "grid" and len(scene.obstacles) > 0:
+        # Scene-level collision checker used by:
+        # 1. ``build_high_level_graph`` to place each port at a point on
+        #    the shared edge where an ``r``-inward inset is checker-valid
+        #    (not inside an inflated-obstacle band), dropping unusable
+        #    edges outright.
+        # 2. The ad-hoc PRM to verify sampled configs and steered edges
+        #    against the *true* inflated obstacle geometry (arcs included),
+        #    complementing the polygonal containment test. The polygonal
+        #    approximation of inflated-obstacle arcs is inexact, so the
+        #    checker is essential — it overrides the polygon test for
+        #    curved regions.
+        if len(scene.obstacles) > 0:
             self._collision_checker = ObjectCollisionDetection(
                 scene.obstacles, robots[0],
             )
@@ -385,6 +301,7 @@ class StagedSolver(Solver):
         hlg = build_high_level_graph(
             partitions, robot_starts, robot_goals, robot_radius,
             topology=self.topology,
+            checker=self._collision_checker,
         )
         self._hlg = hlg
         log(
@@ -417,31 +334,25 @@ class StagedSolver(Solver):
                 log(f"  cell {ci}: density {partition.density} → {new_density} (ports={num_ports})")
                 partition.update_density(new_density)
 
-        # --- Step 4: per-cell PRM ---
-        log("Step 4: building per-cell joint PRMs...")
-        cell_roadmaps: List[CellRoadmap] = []
-        for ci, partition in enumerate(partitions):
-            ports = hlg.cell_boundary_ports.get(ci, {})
-            rm = build_cell_roadmap(
-                partition,
-                boundary_ports=ports,
-                num_samples=self.num_samples,
-                k_nearest=self.k_nearest,
-                seed=self.prm_seed or None,
+        # --- Save a cell decomposition snapshot ---
+        # Every solve drops a timestamped PNG into visualizations/ so the
+        # user can eyeball the partition + port layout that MCF is about
+        # to plan on. Failures here (missing matplotlib, display issues)
+        # must never break solving.
+        try:
+            title = (
+                f"grid, density={self.max_cell_density}, "
+                f"{len(partitions)} cells, "
+                f"{sum(len(p) for p in hlg.cell_boundary_ports.values()) // 2} ports, "
+                f"{num_robots} robots"
             )
-            cell_roadmaps.append(rm)
-            log(
-                f"  cell {ci}: k={partition.density} "
-                f"V={rm.graph.number_of_nodes()} "
-                f"E={rm.graph.number_of_edges()} "
-                f"ports={len(rm.port_nodes)}/{len(ports)}"
+            out = draw_cells(
+                scene, partitions, hlg, robot_radius, title=title,
             )
-
-        # --- PRM pruning (optional) ---
-        if self.prm_prune:
-            pruned = prune_by_prm(hlg, cell_roadmaps)
-            if pruned:
-                log(f"  pruned {pruned} infeasible high-level edges")
+            if out is not None:
+                log(f"  cell snapshot → {out}")
+        except Exception as exc:  # noqa: BLE001 — viz is best-effort
+            log(f"  cell snapshot skipped: {exc}")
 
         # --- Step 6: MCF ---
         T = self.time_horizon or estimate_time_horizon(hlg)
@@ -458,7 +369,7 @@ class StagedSolver(Solver):
         # --- Steps 7+8: path realisation & stitching ---
         log("Steps 7-8: realising geometric paths...")
         return self._realise_paths(
-            mcf_sol, hlg, cell_roadmaps, robots, robot_radius, log,
+            mcf_sol, hlg, partitions, robots, robot_radius, log,
         )
 
     # ------------------------------------------------------------------
@@ -469,7 +380,7 @@ class StagedSolver(Solver):
         self,
         mcf_sol: MCFSolution,
         hlg: HighLevelGraph,
-        cell_roadmaps: List[CellRoadmap],
+        partitions: List[Partition],
         robots,
         robot_radius: float,
         log,
@@ -479,26 +390,27 @@ class StagedSolver(Solver):
         For each timestep, every cell with ≥ 1 active robot gets a fresh
         ad-hoc joint PRM built via ``cell_joint_prm.build_adhoc_roadmap``.
         Transit robots contribute explicit entry/exit configurations
-        (r-inset port positions); holders are pinned at their actual
-        current positions. A failure of the ad-hoc PRM is fatal — we
-        return an empty ``PathCollection`` rather than contaminate the
-        solution with straight-line fallbacks through raw port midpoints.
+        (precomputed per-cell port insets from the HLG); holders are
+        pinned at their actual current positions. A failure of the
+        ad-hoc PRM is fatal — we return an empty ``PathCollection``
+        rather than contaminate the solution with straight-line
+        fallbacks through raw port midpoints.
         """
         num_robots = len(robots)
         T = len(mcf_sol[0])
-        partitions = [rm.partition for rm in cell_roadmaps]
 
         # Current geometric position per robot. Updated at end of every
         # timestep from the robot's segment exit. At a cell boundary
         # this will not equal the next timestep's computed entry — that
         # difference *is* the geometric cell crossing and is materialised
         # in the waypoint list.
-        current_pos: Dict[int, Tuple[float, float]] = {}
-        for r in range(num_robots):
-            current_pos[r] = (
+        current_pos: Dict[int, Tuple[float, float]] = {
+            r: (
                 robots[r].start.x().to_double(),
                 robots[r].start.y().to_double(),
             )
+            for r in range(num_robots)
+        }
 
         robot_segments: Dict[int, List[List[Tuple[float, float]]]] = {
             r: [] for r in range(num_robots)
@@ -507,116 +419,17 @@ class StagedSolver(Solver):
         seed_base = self.prm_seed if self.prm_seed is not None else 0
 
         for t in range(T - 1):
-            # ---- Classify every robot at this timestep ----
-            cell_transitions: Dict[
-                int, List[Tuple[int, str, str]]
-            ] = defaultdict(list)
-            cell_holding: Dict[int, List[int]] = defaultdict(list)
-            holding: List[int] = []
-            fallback_transits: List[Tuple[int, str, str]] = []
-
-            for r in range(num_robots):
-                src = mcf_sol[r][t]
-                dst = mcf_sol[r][t + 1]
-                if src == dst:
-                    holding.append(r)
-                    continue
-                cell_id = self._edge_cell_id(hlg, src, dst)
-                if cell_id is not None and cell_id < len(cell_roadmaps):
-                    cell_transitions[cell_id].append((r, src, dst))
-                else:
-                    fallback_transits.append((r, src, dst))
-
-            # Point-in-polygon classification for holders so their
-            # positions can be pinned in the right cell's ad-hoc PRM.
-            for r in holding:
-                px, py = current_pos[r]
-                for ci, p in enumerate(partitions):
-                    if _point_in_partition(p, px, py):
-                        cell_holding[ci].append(r)
-                        break
-
-            timestep_segments: Dict[int, List[Tuple[float, float]]] = {}
-
-            # Holders: no motion this timestep.
-            for r in holding:
-                timestep_segments[r] = [current_pos[r]]
-
-            # Fallback transits (edge with no cell_id — should be rare,
-            # typically star-topology quirks). Straight line to an
-            # r-inset version of the destination so we never emit a raw
-            # port midpoint as a waypoint.
-            for r, _src, dst in fallback_transits:
-                dst_pos = self._fallback_dst_position(
-                    hlg, partitions, dst, robot_radius,
-                )
-                if dst_pos is None:
-                    dst_pos = current_pos[r]
-                timestep_segments[r] = [current_pos[r], dst_pos]
-
-            # ---- Ad-hoc joint PRM per cell with active transits ----
-            for cell_id, transitions in cell_transitions.items():
-                partition = partitions[cell_id]
-                holders_here = cell_holding.get(cell_id, [])
-
-                transit_entries: List[Tuple[float, float]] = []
-                transit_exits: List[Tuple[float, float]] = []
-                missing = False
-                for _r, src, dst in transitions:
-                    entry = _inset_node_in_cell(
-                        hlg, partition, src, robot_radius,
-                    )
-                    ex = _inset_node_in_cell(
-                        hlg, partition, dst, robot_radius,
-                    )
-                    if entry is None or ex is None:
-                        missing = True
-                        break
-                    transit_entries.append(entry)
-                    transit_exits.append(ex)
-
-                if missing:
-                    log(
-                        f"  ad-hoc PRM: missing node position at t={t}, "
-                        f"cell={cell_id}"
-                    )
-                    return PathCollection()
-
-                pinned = [current_pos[r] for r in holders_here]
-
-                cfg_path = self._plan_adhoc(
-                    partition,
-                    transit_entries,
-                    transit_exits,
-                    pinned,
-                    robot_radius,
-                    seed_base,
-                    cell_id,
-                    t,
-                )
-                if cfg_path is None:
-                    transit_robots = [rr for rr, _, _ in transitions]
-                    log(
-                        f"  ad-hoc PRM failed at t={t}, cell={cell_id}, "
-                        f"transits={transit_robots}, holders={holders_here}"
-                    )
-                    return PathCollection()
-
-                n_transit = len(transitions)
-                for slot, (r, _src, _dst) in enumerate(transitions):
-                    seg = [(cfg[slot][0], cfg[slot][1]) for cfg in cfg_path]
-                    timestep_segments[r] = seg
-                for j, r in enumerate(holders_here):
-                    slot = n_transit + j
-                    seg = [(cfg[slot][0], cfg[slot][1]) for cfg in cfg_path]
-                    timestep_segments[r] = seg
+            timestep_segments = self._realise_timestep(
+                t, mcf_sol, hlg, partitions, current_pos, robot_radius,
+                seed_base, log,
+            )
+            if timestep_segments is None:
+                return PathCollection()
 
             # ---- Pad segments to a common length for this timestep ----
-            if timestep_segments:
-                max_seg = max(len(s) for s in timestep_segments.values())
-            else:
-                max_seg = 1
-
+            max_seg = max(
+                (len(s) for s in timestep_segments.values()), default=1,
+            )
             for r in range(num_robots):
                 seg = timestep_segments.get(r, [current_pos[r]])
                 while len(seg) < max_seg:
@@ -670,6 +483,105 @@ class StagedSolver(Solver):
 
         log(f"  {num_robots} paths, {max_len} waypoints each")
         return pc
+
+    def _realise_timestep(
+        self,
+        t: int,
+        mcf_sol: MCFSolution,
+        hlg: HighLevelGraph,
+        partitions: List[Partition],
+        current_pos: Dict[int, Tuple[float, float]],
+        robot_radius: float,
+        seed_base: int,
+        log,
+    ) -> Optional[Dict[int, List[Tuple[float, float]]]]:
+        """Plan one MCF timestep. Returns per-robot segments or None on failure."""
+        num_robots = len(current_pos)
+
+        # Classify robots: holding (src == dst), or transiting via a
+        # specific cell (identified by edge cell_id in the HLG). Rare
+        # fallback transits (no cell_id — typically star-topology quirks)
+        # are skipped to a straight-line holder segment.
+        cell_transitions: Dict[int, List[Tuple[int, str, str]]] = defaultdict(
+            list,
+        )
+        holding: List[int] = []
+        fallback: List[Tuple[int, str]] = []
+
+        for r in range(num_robots):
+            src = mcf_sol[r][t]
+            dst = mcf_sol[r][t + 1]
+            if src == dst:
+                holding.append(r)
+                continue
+            cell_id = _edge_cell_id(hlg, src, dst)
+            if cell_id is not None and cell_id < len(partitions):
+                cell_transitions[cell_id].append((r, src, dst))
+            else:
+                fallback.append((r, dst))
+
+        # Holders sit in their current cell for this timestep; we locate
+        # them by point-in-polygon so their positions can be pinned in
+        # the right ad-hoc PRM.
+        cell_holding: Dict[int, List[int]] = defaultdict(list)
+        for r in holding:
+            px, py = current_pos[r]
+            for ci, p in enumerate(partitions):
+                if _point_in_partition(p, px, py):
+                    cell_holding[ci].append(r)
+                    break
+
+        timestep_segments: Dict[int, List[Tuple[float, float]]] = {
+            r: [current_pos[r]] for r in holding
+        }
+        for r, dst in fallback:
+            dst_pos = _fallback_dst_position(hlg, dst) or current_pos[r]
+            timestep_segments[r] = [current_pos[r], dst_pos]
+
+        for cell_id, transitions in cell_transitions.items():
+            partition = partitions[cell_id]
+            holders_here = cell_holding.get(cell_id, [])
+
+            transit_entries: List[Tuple[float, float]] = []
+            transit_exits: List[Tuple[float, float]] = []
+            for _r, src, dst in transitions:
+                entry = _node_position_in_cell(hlg, cell_id, src)
+                ex = _node_position_in_cell(hlg, cell_id, dst)
+                if entry is None or ex is None:
+                    log(
+                        f"  ad-hoc PRM: missing node position at t={t}, "
+                        f"cell={cell_id}"
+                    )
+                    return None
+                transit_entries.append(entry)
+                transit_exits.append(ex)
+
+            pinned = [current_pos[r] for r in holders_here]
+
+            cfg_path = self._plan_adhoc(
+                partition, transit_entries, transit_exits, pinned,
+                robot_radius, seed_base, cell_id, t,
+            )
+            if cfg_path is None:
+                transit_robots = [rr for rr, _, _ in transitions]
+                log(
+                    f"  ad-hoc PRM failed at t={t}, cell={cell_id}, "
+                    f"transits={transit_robots}, holders={holders_here}"
+                )
+                return None
+
+            n_transit = len(transitions)
+            for slot, (r, _src, _dst) in enumerate(transitions):
+                timestep_segments[r] = [
+                    (cfg[slot][0], cfg[slot][1]) for cfg in cfg_path
+                ]
+            for j, r in enumerate(holders_here):
+                slot = n_transit + j
+                timestep_segments[r] = [
+                    (cfg[slot][0], cfg[slot][1]) for cfg in cfg_path
+                ]
+
+        return timestep_segments
 
     # ------------------------------------------------------------------
     # Ad-hoc PRM helpers
@@ -731,44 +643,3 @@ class StagedSolver(Solver):
                 continue
         return None
 
-    def _fallback_dst_position(
-        self,
-        hlg: HighLevelGraph,
-        partitions: List[Partition],
-        dst_node: str,
-        robot_radius: float,
-    ) -> Optional[Tuple[float, float]]:
-        """Best-effort r-inset target for a fallback (no cell_id) transit.
-
-        If ``dst_node`` is a port, inset into any cell that owns it;
-        otherwise return the raw position (start/goal/hub, already
-        inside a cell).
-        """
-        pos = hlg.node_positions.get(dst_node)
-        if pos is None:
-            return None
-        if not dst_node.startswith("port_"):
-            return pos
-        try:
-            port_id = int(dst_node[len("port_"):])
-        except ValueError:
-            return pos
-        for ci, ports in hlg.cell_boundary_ports.items():
-            if port_id in ports and 0 <= ci < len(partitions):
-                return _inset_toward_centroid(
-                    partitions[ci], pos, robot_radius,
-                )
-        return pos
-
-    def _edge_cell_id(
-        self, hlg: HighLevelGraph, src: str, dst: str,
-    ) -> Optional[int]:
-        """Find the cell_id of the edge between src and dst."""
-        G = hlg.graph
-        if G.has_edge(src, dst):
-            return G.edges[src, dst].get("cell_id")
-        # For star topology, try two-hop through hub
-        for nb in G.neighbors(src):
-            if nb.startswith("hub_") and G.has_edge(nb, dst):
-                return G.edges[src, nb].get("cell_id")
-        return None

@@ -1,3 +1,13 @@
+"""Partition the Minkowski-inflated free space into small convex cells.
+
+Currently only a pure grid decomposition is supported via
+``partition_free_space_grid``. An earlier trapezoidal-decomposition pass
+(``_vertical_decompose`` + ``partition_free_space_vertical``) was removed:
+it produced narrow slivers along inflated-obstacle arcs that the joint
+PRM could not reliably separate, and it offered no solve-success benefit
+over the grid decomposition once ``max_cell_density`` was tuned.
+"""
+
 import math
 from typing import List, Tuple
 
@@ -7,12 +17,10 @@ from discopygal.bindings import (
     Arrangement_2,
     Curve_2,
     FT,
-    Halfedge,
     Ker,
     Point_2,
     Pol2,
     Segment_2,
-    Vertex,
 )
 from discopygal.solvers_infra import Scene
 
@@ -25,45 +33,6 @@ def _to_ker_point_2(point) -> "Ker.Point_2":
     ``Ker.Point_2`` by taking only the rational part. Mirrors
     ``ExactSingle.to_ker_point_2``."""
     return Ker.Point_2(point.x().a0(), point.y().a0())
-
-
-def _vertical_decompose(arr: Arrangement_2) -> Aos2:
-    """Add vertical walls to ``arr`` so every face is a trapezoid.
-
-    Lifted from ``ExactSingle.vertical_decomposition``. ``Aos2.decompose``
-    returns, for each vertex of the arrangement, the topmost and bottommost
-    objects (vertices or halfedges) directly above/below it. We turn each
-    such (vertex, object) pair into a vertical line segment and overlay the
-    resulting walls back onto the arrangement.
-
-    The face ``data()`` tags from the input are preserved by the overlay
-    (their sum is unchanged because the wall arrangement uses ``data() == 0``).
-    """
-    decomposition = Aos2.decompose(arr)
-    walls = []
-    for vertex, neighbours in decomposition:
-        v_point = _to_ker_point_2(vertex.point())
-        for obj in neighbours:
-            if isinstance(obj, Vertex):
-                other = _to_ker_point_2(obj.point())
-                walls.append(Curve_2(Segment_2(v_point, other)))
-            elif isinstance(obj, Halfedge):
-                line = Ker.Line_2(
-                    _to_ker_point_2(obj.source().point()),
-                    _to_ker_point_2(obj.target().point()),
-                )
-                y_at_x = line.y_at_x(v_point.x())
-                walls.append(
-                    Curve_2(Segment_2(v_point, Point_2(v_point.x(), y_at_x)))
-                )
-
-    walls_arr = Arrangement_2()
-    Aos2.insert(walls_arr, walls)
-    for face in walls_arr.faces():
-        face.set_data(FREE)
-
-    traits = Arr_overlay_function_traits(lambda x, y: x + y)
-    return Aos2.overlay(arr, walls_arr, traits)
 
 
 def _face_to_polygon(face) -> Pol2.Polygon_2:
@@ -93,14 +62,11 @@ def _refine_with_grid(
 ) -> Arrangement_2:
     """Add a regular grid of cuts to limit cell density.
 
-    After vertical decomposition, large open faces may still have very high
-    density. This function adds a **regular grid** of horizontal and vertical
-    cuts whose spacing is chosen so that each resulting cell has area at most
+    Adds horizontal and vertical cut lines whose spacing is chosen so that
+    each resulting cell has area at most
     ``max_cell_density * pi * (2r)^2`` — i.e. density <= max_cell_density.
-
-    The grid spacing is also floored at ``4 * robot_radius`` so that every
-    cell is wide enough for boundary-inset sampling (points kept at least
-    ``r`` from all edges).
+    Spacing is floored at ``4 * robot_radius`` so every cell is wide enough
+    for boundary-inset sampling (points kept at least ``r`` from all edges).
 
     All cuts span the full bounding box. The overlay preserves face data
     tags (free/blocked) via additive functor.
@@ -160,86 +126,37 @@ def _refine_with_grid(
     return Aos2.overlay(arr, walls_arr, traits)
 
 
-def partition_free_space_vertical(
-        scene: Scene,
-        robot_radius: float,
-        eps: float = 1e-4,
-        max_cell_density: int = 4,
-) -> Tuple[List[Partition], Arrangement_2]:
-    """Build the disc-robot free space and partition it into convex cells.
-
-    This implements steps 1+2 of ``plan.tex``:
-
-    1. ``construct_free_space`` builds an arrangement of inflated obstacles
-       clipped to the bounding box (faces tagged ``FREE`` / ``BLOCKED``).
-    2. ``_vertical_decompose`` adds vertical walls at every vertex, splitting
-       every free face into convex trapezoids/triangles.
-    3. ``_refine_with_grid`` adds horizontal walls at every vertex plus a
-       regular grid of cuts so that no cell exceeds ``max_cell_density``.
-    4. Each free face is converted to a ``Pol2.Polygon_2`` and wrapped in a
-       ``Partition`` whose ``density`` is computed from area and
-       ``robot_radius``.
-
-    Parameters
-    ----------
-    max_cell_density :
-        Target upper bound for per-cell density.  Grid cuts are spaced so
-        that each cell's area yields density <= this value.  Lower values
-        give smaller cells (better for joint PRM) but more cells (slower
-        high-level graph and MCF).  Default 8.
-    """
-    arr = construct_free_space(scene, robot_radius=robot_radius, eps=eps)
-    arr = _vertical_decompose(arr)
-    arr = _refine_with_grid(arr, robot_radius, max_cell_density)
-
-    partitions: List[Partition] = []
-    for face in arr.faces():
-        if face.is_unbounded() or face.data() != FREE:
-            continue
-        poly = _face_to_polygon(face)
-        if poly.size() < 3:
-            continue
-        partitions.append(Partition(polygon=poly, robot_radius=robot_radius))
-    return partitions, arr
-
-
 def partition_free_space_grid(
         scene: Scene,
         robot_radius: float,
         eps: float = 1e-4,
-        max_cell_density: int = 4,
+        max_cell_density: int = 100,
 ) -> Tuple[List[Partition], Arrangement_2]:
-    """Partition free space with a *pure grid* — no vertical decomposition.
+    """Partition free space with a regular grid.
 
-    Alternative to ``partition_free_space_vertical`` for scenes where
-    vertical decomposition produces narrow slivers (cells narrower than
-    ``2r``) that the ad-hoc joint PRM cannot separate safely. By skipping
-    ``_vertical_decompose`` entirely and relying solely on the regular grid
-    in ``_refine_with_grid``, cells are coarser and stay comfortably wide
-    as long as ``max_cell_density`` is chosen so the grid spacing is at
-    least ``2r`` on each side (the ``_refine_with_grid`` floor of ``4r``
-    already guarantees this).
+    1. ``construct_free_space`` builds an arrangement of inflated obstacles
+       clipped to the bounding box (faces tagged ``FREE`` / ``BLOCKED``).
+    2. ``_refine_with_grid`` overlays a regular grid of horizontal and
+       vertical cuts so that each resulting cell has area bounded by
+       ``max_cell_density`` disc-packing units. Grid spacing is floored at
+       ``4 * robot_radius`` so every cell is wide enough for boundary-inset
+       sampling.
+    3. Each free face is converted to a ``Pol2.Polygon_2`` and wrapped in a
+       ``Partition`` whose ``density`` is computed from area and radius.
 
-    Trade-offs
-    ----------
-    - Cells are **not guaranteed convex**. The inflated-obstacle boundaries
-      carve curved notches into cells that touch them. The downstream code
-      (``build_adhoc_roadmap``, ``_inset_toward_centroid``) already handles
-      non-convex partitions via closed point-in-polygon tests.
-    - For a given ``max_cell_density`` the grid version typically yields
-      *fewer*, bigger cells than the vertical+grid version, so the HLG and
-      MCF are smaller. Trade: less precise capacity control inside large
-      open regions.
-    - Use this mode on scenes with axis-aligned obstacles and narrow
-      corridors (warehouses, office layouts). Prefer the vertical mode for
-      scenes with diagonal obstacles where vertical cuts align with
-      natural cell boundaries.
+    Cells are **not guaranteed convex**: inflated-obstacle arcs carve curved
+    notches into cells that touch them. The downstream code
+    (``build_adhoc_roadmap``, ``high_level_graph``) handles non-convex
+    partitions via closed point-in-polygon tests plus a scene-level
+    collision checker for exact-arc validity.
 
     Parameters
     ----------
     max_cell_density :
-        Passed through to ``_refine_with_grid``. Same meaning as in
-        ``partition_free_space_vertical``.
+        Upper bound for per-cell density. Lower values split large open
+        regions into smaller cells (better joint-PRM performance, slower
+        HLG/MCF). Higher values leave cells as large as the free-space
+        topology allows.
     """
     arr = construct_free_space(scene, robot_radius=robot_radius, eps=eps)
     arr = _refine_with_grid(arr, robot_radius, max_cell_density)

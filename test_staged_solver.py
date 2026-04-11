@@ -44,8 +44,8 @@ def _run_solver(
     k_nearest: int = 8,
     seed: int = 42,
     time_horizon=None,
-    max_cell_density: int = 4,
-    partition_mode: str = "vertical",
+    max_cell_density: int = 100,
+    partition_mode: str = "grid",
     verbose: bool = True,
 ) -> PathCollection:
     solver = StagedSolver(
@@ -263,16 +263,7 @@ def test_warehouse():
         return
     scene = Scene.from_file(path)
     print(f"  {len(scene.robots)} robots, {len(scene.obstacles)} obstacles")
-    # Grid-only partition avoids narrow slivers from vertical decomposition
-    # along the aisle walls, which would otherwise break the ad-hoc PRM's
-    # 2r-separation guarantee for robots in adjacent cells.
-    pc = _run_solver(
-        scene,
-        num_samples=50,
-        time_horizon=40,
-        max_cell_density=100,
-        partition_mode="grid",
-    )
+    pc = _run_solver(scene, num_samples=50, time_horizon=40)
     _check_paths(scene, pc, "warehouse")
 
 

@@ -1,66 +1,31 @@
-"""Per-cell joint k-robot PRM.
+"""Ad-hoc per-(cell, timestep) joint k-robot PRM.
 
-Step 4 of ``plan.tex``. For every trapezoidal ``Partition`` we sample a
-probabilistic roadmap whose nodes are *joint* configurations of up to ``k``
-robots simultaneously occupying the cell, where ``k = partition.density``.
+Step 4 / step 7 of ``plan.tex``. At path realisation time the staged
+solver builds one small joint roadmap per cell per MCF timestep via
+:func:`build_adhoc_roadmap`. A *joint* configuration places up to ``k``
+robots simultaneously in the cell; the PRM finds a collision-free joint
+steer from an explicit entry configuration to an explicit exit
+configuration.
 
 Geometry
 --------
-The cell is a convex polygon (a trapezoid coming out of the vertical
-decomposition). For convex domains, two configurations whose individual
-robot positions both lie inside the cell are also connected by a straight
-line that stays inside the cell. That collapses the per-robot collision
-check inside the cell to nothing — the only remaining concern is *robot–
-robot* collision in the **joint** space.
-
 A joint configuration ``c = (p_1, …, p_k)`` is **valid** when
 
     ∀ i ≠ j :  ‖p_i − p_j‖ ≥ 2r          (pairwise non-overlap)
-    ∀ i     :  p_i ∈ cell                (containment)
+    ∀ i     :  p_i ∈ cell                (polygon containment)
+    ∀ i     :  p_i ∉ true_obstacles      (checker, when supplied)
 
-Two valid joint configurations ``c`` and ``c'`` are **connected** by a
-straight-line steer in joint space if every interpolated configuration
-along the segment is also valid. Because the cell is convex, individual
-``p_i(t) = (1−t)·p_i + t·p'_i`` stays inside, so we only re-check the
-pairwise separation condition along a discretised sweep.
-
-Boundary ports
---------------
-The high-level graph (step 5) wires cells together at the midpoint of every
-shared edge between adjacent cells — those midpoints are the **ports**. To
-let the multi-commodity flow extract a real motion plan we need each port
-to correspond to at least one node in the cell roadmap. We construct a
-*port joint config* by pinning the first robot at the port midpoint and
-sampling the other ``k − 1`` robots inside the cell so that pairwise
-separation holds. The "first robot" slot is bookkeeping only; the high-level
-graph does not care which slot a particular agent occupies — it cares that
-*some* node in the cell graph realises the port.
-
-Output
-------
-A ``CellRoadmap`` containing
-- ``partition``: the source cell,
-- ``graph``: a ``networkx.Graph`` whose nodes are joint configurations and
-  whose edge weights are the maximum single-robot travel along the steer,
-- ``port_nodes``: ``{boundary_id → joint_config}`` so the high-level graph
-  can hand the cell a (entry_port, exit_port) pair and ask the roadmap for
-  a path between the two anchor nodes.
-
-Limitations
------------
-- Sampling is rejection-based and may fail to populate roadmaps for very
-  tight cells whose ``density`` is optimistic. The fix when this becomes a
-  problem is to lower the density formula in ``Partition`` or raise
-  ``num_samples``.
-- We approximate the swept-volume collision check with a fixed number of
-  steps (``DEFAULT_STEER_STEPS``). Increase if cells are large relative to
-  the robot radius.
+Two valid joint configurations are **connected** by a straight-line
+joint-space steer iff every interpolated configuration is also valid.
+For convex cells this collapses to a pairwise 2r check (solved exactly
+in closed form by ``_steer_pairwise_min_ok``); for non-convex cells
+from grid-only partitioning we additionally sweep polygon containment
+and check each robot's segment against the scene collision checker.
 """
 
 import math
 import random
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import networkx as nx
 
@@ -75,8 +40,6 @@ from partition import Partition
 JointConfig = Tuple[Tuple[float, float], ...]
 
 DEFAULT_STEER_STEPS = 10
-DEFAULT_NUM_SAMPLES = 30
-DEFAULT_K_NEAREST = 6
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +65,52 @@ def _pairwise_separated(points: List[Tuple[float, float]], min_dist_sq: float) -
             dx = xi - points[j][0]
             dy = yi - points[j][1]
             if dx * dx + dy * dy < min_dist_sq:
+                return False
+    return True
+
+
+def _steer_pairwise_min_ok(
+    c1: "JointConfig", c2: "JointConfig", min_dist_sq: float,
+) -> bool:
+    """Exact pairwise separation over a straight-line joint steer.
+
+    For each robot pair ``(i, j)`` we have two linear trajectories
+    ``p_i(t) = c1[i] + t * (c2[i] - c1[i])`` and similarly for ``p_j``.
+    Their squared distance ``d²(t) = |p_i(t) - p_j(t)|²`` is a quadratic
+    in ``t``, minimised at a closed-form ``t*`` (clamped to ``[0, 1]``).
+    We compute that minimum exactly for every pair — no discretisation
+    miss, no false accepts from coarse step counts.
+    """
+    k = len(c1)
+    for i in range(k):
+        a1x, a1y = c1[i]
+        b1x, b1y = c2[i]
+        dx1 = b1x - a1x
+        dy1 = b1y - a1y
+        for j in range(i + 1, k):
+            a2x, a2y = c1[j]
+            b2x, b2y = c2[j]
+            dx2 = b2x - a2x
+            dy2 = b2y - a2y
+            # diff(t) = (c1[i] - c1[j]) + t * ((c2[i]-c1[i]) - (c2[j]-c1[j]))
+            px = a1x - a2x
+            py = a1y - a2y
+            rx = dx1 - dx2
+            ry = dy1 - dy2
+            rr = rx * rx + ry * ry
+            if rr <= 1e-18:
+                # Parallel / zero relative velocity — constant distance.
+                if px * px + py * py < min_dist_sq:
+                    return False
+                continue
+            t_star = -(px * rx + py * ry) / rr
+            if t_star < 0.0:
+                t_star = 0.0
+            elif t_star > 1.0:
+                t_star = 1.0
+            ex = px + t_star * rx
+            ey = py + t_star * ry
+            if ex * ex + ey * ey < min_dist_sq:
                 return False
     return True
 
@@ -165,19 +174,18 @@ def _steer_collision_free(
     """
     min_sq = (2.0 * robot_radius) ** 2
     k = len(c1)
-    for s in range(steps + 1):
-        t = s / steps
-        cur = [
-            (
-                c1[i][0] + t * (c2[i][0] - c1[i][0]),
-                c1[i][1] + t * (c2[i][1] - c1[i][1]),
-            )
-            for i in range(k)
-        ]
-        if not _pairwise_separated(cur, min_sq):
-            return False
-        if poly is not None:
-            for x, y in cur:
+    # Exact pairwise separation along the straight-line joint steer.
+    if not _steer_pairwise_min_ok(c1, c2, min_sq):
+        return False
+    # Polygon containment is only approximate here; the discretised
+    # sweep still catches the typical cases and the obstacle checker
+    # below is authoritative for arcs.
+    if poly is not None:
+        for s in range(steps + 1):
+            t = s / steps
+            for i in range(k):
+                x = c1[i][0] + t * (c2[i][0] - c1[i][0])
+                y = c1[i][1] + t * (c2[i][1] - c1[i][1])
                 if not _point_inside_polygon(poly, x, y):
                     return False
     if checker is not None:
@@ -251,134 +259,6 @@ def _sample_joint_config(
         if not placed:
             return None
     return tuple(points)
-
-
-# ---------------------------------------------------------------------------
-# Roadmap
-# ---------------------------------------------------------------------------
-
-@dataclass
-class CellRoadmap:
-    partition: Partition
-    graph: nx.Graph
-    port_nodes: Dict[int, JointConfig]
-
-
-def build_cell_roadmap(
-    partition: Partition,
-    boundary_ports: Dict[int, Tuple[float, float]],
-    num_samples: int = DEFAULT_NUM_SAMPLES,
-    k_nearest: int = DEFAULT_K_NEAREST,
-    steer_steps: int = DEFAULT_STEER_STEPS,
-    seed: Optional[int] = None,
-) -> CellRoadmap:
-    """Build a joint-space PRM inside a single trapezoidal cell.
-
-    Args:
-        partition: cell to roadmap.
-        boundary_ports: ``{boundary_id: (x, y)}`` — midpoints of shared
-            edges with neighbour cells. Each becomes an *anchor* joint
-            configuration whose first robot sits on the port and whose
-            remaining robots are sampled away from it.
-        num_samples: number of random interior joint configurations to draw.
-        k_nearest: each sample tries to connect to its ``k_nearest`` joint-
-            distance nearest neighbours; collision-free attempts become
-            roadmap edges.
-        steer_steps: discretisation of the swept-volume collision check.
-        seed: optional RNG seed for reproducibility.
-
-    The PRM operates in joint space with ``k = partition.density`` robots.
-    The grid refinement in ``scene_partitioning`` ensures that density
-    values are bounded by ``max_cell_density`` (default 8), keeping the
-    joint-space dimension tractable for the incremental placement sampler.
-    """
-    rng = random.Random(seed)
-    poly = partition.polygon
-    k = max(1, partition.density)
-    r = partition.robot_radius
-
-    # Use boundary margin = r so all PRM points are at least r from cell
-    # edges, preventing cross-cell robot collisions.  Fall back to no
-    # margin for very narrow cells where inset sampling would fail.
-    margin = r
-    _test_cfg = _sample_joint_config(poly, 1, r, rng, boundary_margin=margin,
-                                     max_tries_per_robot=50)
-    if _test_cfg is None:
-        margin = 0.0  # cell too narrow for inset sampling
-
-    graph = nx.Graph()
-    samples: List[JointConfig] = []
-
-    # Random interior samples
-    for _ in range(num_samples):
-        cfg = _sample_joint_config(poly, k, r, rng, boundary_margin=margin)
-        if cfg is None:
-            continue
-        if cfg not in graph:
-            graph.add_node(cfg)
-            samples.append(cfg)
-
-    # Boundary-port anchor configs
-    # Port midpoints lie on the cell boundary.  Nudge them r toward the
-    # centroid so the pinned position respects the boundary margin and
-    # prevents cross-cell collisions at ports.
-    cx = sum(v.x().to_double() for v in poly.vertices()) / poly.size()
-    cy = sum(v.y().to_double() for v in poly.vertices()) / poly.size()
-
-    port_nodes: Dict[int, JointConfig] = {}
-    for boundary_id, (px, py) in boundary_ports.items():
-        # Nudge toward centroid by r (or as close as possible).  The
-        # anchor must be at least r from the boundary edge containing
-        # the port; otherwise two robots at adjacent ports of the same
-        # boundary would be < 2r apart.
-        dx, dy = cx - px, cy - py
-        dist = math.sqrt(dx * dx + dy * dy)
-        if dist > 1e-12:
-            if margin > 0:
-                # Use the edge inset directly: project the port r
-                # along the inward normal (which here is the centroid
-                # direction for a port on a single edge).
-                nudge = min(margin, max(dist - 1e-6, 0.0))
-            else:
-                nudge = 1e-6
-            npx = px + (nudge / dist) * dx
-            npy = py + (nudge / dist) * dy
-        else:
-            npx, npy = px, py
-        cfg = _sample_joint_config(
-            poly, k, r, rng, pinned=[(npx, npy)],
-            boundary_margin=margin,
-        )
-        if cfg is None:
-            # Retry without margin
-            cfg = _sample_joint_config(
-                poly, k, r, rng, pinned=[(npx, npy)],
-            )
-        if cfg is None:
-            continue
-        if cfg not in graph:
-            graph.add_node(cfg)
-            samples.append(cfg)
-        port_nodes[boundary_id] = cfg
-
-    # k-NN connection inside the joint space
-    for i, ci in enumerate(samples):
-        candidates = sorted(
-            (
-                (_config_distance(ci, cj), j)
-                for j, cj in enumerate(samples)
-                if j != i
-            ),
-            key=lambda pair: pair[0],
-        )[:k_nearest]
-        for distance, j in candidates:
-            cj = samples[j]
-            if graph.has_edge(ci, cj):
-                continue
-            if _steer_collision_free(ci, cj, r, steer_steps):
-                graph.add_edge(ci, cj, weight=distance)
-
-    return CellRoadmap(partition=partition, graph=graph, port_nodes=port_nodes)
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +390,38 @@ def build_adhoc_roadmap(
         graph.add_node(cfg)
         samples.append(cfg)
 
+    # Anchor-local bridge samples. Validated ports already sit in
+    # regions with a 2r escape, but the main random sampler still
+    # has a hard time hitting the narrow strip near the anchor when
+    # the cell is large relative to that strip. Seed a burst of extra
+    # samples in a small window around every transit slot of every
+    # anchor so k-NN can thread the anchor through a local chain.
+    bridge_burst = max(10, num_samples // 2)
+    bridge_radius = max(3.0 * r, 0.4)
+    anchor_list = [entry_cfg] if exit_cfg == entry_cfg else [entry_cfg, exit_cfg]
+    for anchor in anchor_list:
+        for slot in range(n_transit):
+            ax, ay = anchor[slot]
+            for _ in range(bridge_burst):
+                bx = ax + rng.uniform(-bridge_radius, bridge_radius)
+                by = ay + rng.uniform(-bridge_radius, bridge_radius)
+                if not _point_inside_polygon(poly, bx, by):
+                    continue
+                if checker is not None and not checker.is_point_valid(
+                    Point_2(FT(bx), FT(by))
+                ):
+                    continue
+                trial = list(anchor[:n_transit])
+                trial[slot] = (bx, by)
+                trial.extend(anchor[n_transit:])
+                cfg = tuple(trial)
+                if not _pairwise_separated(list(cfg), min_sq):
+                    continue
+                if cfg in graph:
+                    continue
+                graph.add_node(cfg)
+                samples.append(cfg)
+
     # k-NN connection with swept-volume pairwise check.
     for i, ci in enumerate(samples):
         candidates = sorted(
@@ -528,5 +440,23 @@ def build_adhoc_roadmap(
                 ci, cj, r, steer_steps, poly=poly, checker=checker,
             ):
                 graph.add_edge(ci, cj, weight=distance)
+
+    # Anchor brute-force pass: try every (entry, other) and (exit, other)
+    # straight-line steer. ``num_samples`` is small, so the O(N) per
+    # anchor is cheap and it recovers paths that k-NN misses when the
+    # anchor sits near an awkward corner.
+    anchors = [entry_cfg]
+    if exit_cfg != entry_cfg:
+        anchors.append(exit_cfg)
+    for anchor in anchors:
+        for other in samples:
+            if other is anchor or graph.has_edge(anchor, other):
+                continue
+            if _steer_collision_free(
+                anchor, other, r, steer_steps, poly=poly, checker=checker,
+            ):
+                graph.add_edge(
+                    anchor, other, weight=_config_distance(anchor, other),
+                )
 
     return graph, entry_cfg, exit_cfg
