@@ -45,6 +45,7 @@ def _run_solver(
     seed: int = 42,
     time_horizon=None,
     max_cell_density: int = 4,
+    partition_mode: str = "vertical",
     verbose: bool = True,
 ) -> PathCollection:
     solver = StagedSolver(
@@ -55,6 +56,7 @@ def _run_solver(
         time_horizon=time_horizon,
         prm_seed=seed,
         max_cell_density=max_cell_density,
+        partition_mode=partition_mode,
     )
     solver.verbose = verbose
     solver.load_scene(scene)
@@ -261,7 +263,16 @@ def test_warehouse():
         return
     scene = Scene.from_file(path)
     print(f"  {len(scene.robots)} robots, {len(scene.obstacles)} obstacles")
-    pc = _run_solver(scene, num_samples=50, time_horizon=40, max_cell_density=1000)
+    # Grid-only partition avoids narrow slivers from vertical decomposition
+    # along the aisle walls, which would otherwise break the ad-hoc PRM's
+    # 2r-separation guarantee for robots in adjacent cells.
+    pc = _run_solver(
+        scene,
+        num_samples=50,
+        time_horizon=40,
+        max_cell_density=100,
+        partition_mode="grid",
+    )
     _check_paths(scene, pc, "warehouse")
 
 

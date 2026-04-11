@@ -66,7 +66,7 @@ import networkx as nx
 
 from CGALPY.CGALPY import Bounded_side
 
-from discopygal.bindings import FT, Pol2, Point_2
+from discopygal.bindings import FT, Pol2, Point_2, Segment_2
 
 from partition import Partition
 
@@ -145,11 +145,23 @@ def _steer_collision_free(
     c2: JointConfig,
     robot_radius: float,
     steps: int = DEFAULT_STEER_STEPS,
+    poly: Optional[Pol2.Polygon_2] = None,
+    checker=None,
 ) -> bool:
     """Check pairwise separation along a straight-line joint-space steer.
 
-    Containment is implicit because both endpoints are inside the same
-    convex cell.
+    If ``poly`` is ``None`` containment is assumed (valid for convex cells
+    from vertical decomposition). If ``poly`` is supplied, every
+    interpolated robot position is additionally tested for polygon
+    containment — required for the grid-only partition mode, whose cells
+    can be non-convex where inflated obstacle boundaries carve notches.
+
+    If ``checker`` is supplied (a discopygal ``ObjectCollisionDetection``
+    instance), each robot's straight-line segment is additionally vetted
+    via ``checker.is_edge_valid`` — the authoritative swept-disc vs scene-
+    obstacle check that ``verify_paths`` itself uses. This catches cases
+    where the polygon approximation of a curved inflated-obstacle boundary
+    (arc-vs-chord gap) incorrectly claims blocked area as free.
     """
     min_sq = (2.0 * robot_radius) ** 2
     k = len(c1)
@@ -164,6 +176,22 @@ def _steer_collision_free(
         ]
         if not _pairwise_separated(cur, min_sq):
             return False
+        if poly is not None:
+            for x, y in cur:
+                if not _point_inside_polygon(poly, x, y):
+                    return False
+    if checker is not None:
+        for i in range(k):
+            # Degenerate zero-length segments (pinned holders) are always
+            # safe — skip them to avoid CGAL degenerate-segment asserts.
+            if c1[i] == c2[i]:
+                continue
+            seg = Segment_2(
+                Point_2(FT(c1[i][0]), FT(c1[i][1])),
+                Point_2(FT(c2[i][0]), FT(c2[i][1])),
+            )
+            if not checker.is_edge_valid(seg):
+                return False
     return True
 
 
@@ -179,6 +207,7 @@ def _sample_joint_config(
     pinned: Optional[List[Tuple[float, float]]] = None,
     max_tries_per_robot: int = 200,
     boundary_margin: float = 0.0,
+    checker=None,
 ) -> Optional[JointConfig]:
     """Incrementally sample a valid joint configuration of ``k`` robots.
 
@@ -207,10 +236,18 @@ def _sample_joint_config(
                 continue
             if boundary_margin > 0 and _min_edge_distance(poly, x, y) < boundary_margin:
                 continue
-            if all((x - px) ** 2 + (y - py) ** 2 >= min_sq for px, py in points):
-                points.append((x, y))
-                placed = True
-                break
+            if not all((x - px) ** 2 + (y - py) ** 2 >= min_sq for px, py in points):
+                continue
+            # Authoritative check against true inflated obstacles. Needed
+            # for non-convex cells from grid-only partitioning where the
+            # polygon approximates arc boundaries with chords.
+            if checker is not None and not checker.is_point_valid(
+                Point_2(FT(x), FT(y))
+            ):
+                continue
+            points.append((x, y))
+            placed = True
+            break
         if not placed:
             return None
     return tuple(points)
@@ -290,11 +327,20 @@ def build_cell_roadmap(
 
     port_nodes: Dict[int, JointConfig] = {}
     for boundary_id, (px, py) in boundary_ports.items():
-        # Nudge toward centroid by r (or less if cell is small)
+        # Nudge toward centroid by r (or as close as possible).  The
+        # anchor must be at least r from the boundary edge containing
+        # the port; otherwise two robots at adjacent ports of the same
+        # boundary would be < 2r apart.
         dx, dy = cx - px, cy - py
         dist = math.sqrt(dx * dx + dy * dy)
         if dist > 1e-12:
-            nudge = min(margin, dist * 0.5) if margin > 0 else 1e-6
+            if margin > 0:
+                # Use the edge inset directly: project the port r
+                # along the inward normal (which here is the centroid
+                # direction for a port on a single edge).
+                nudge = min(margin, max(dist - 1e-6, 0.0))
+            else:
+                nudge = 1e-6
             npx = px + (nudge / dist) * dx
             npy = py + (nudge / dist) * dy
         else:
@@ -333,3 +379,154 @@ def build_cell_roadmap(
                 graph.add_edge(ci, cj, weight=distance)
 
     return CellRoadmap(partition=partition, graph=graph, port_nodes=port_nodes)
+
+
+# ---------------------------------------------------------------------------
+# Ad-hoc per-(cell, timestep) roadmap
+# ---------------------------------------------------------------------------
+
+def build_adhoc_roadmap(
+    partition: Partition,
+    entry_positions: List[Tuple[float, float]],
+    exit_positions: List[Tuple[float, float]],
+    pinned_positions: List[Tuple[float, float]],
+    robot_radius: float,
+    num_samples: int = 15,
+    k_nearest: int = 6,
+    steer_steps: int = DEFAULT_STEER_STEPS,
+    rng: Optional[random.Random] = None,
+    checker=None,
+) -> Optional[Tuple[nx.Graph, JointConfig, JointConfig]]:
+    """Build a single-timestep joint PRM for one cell.
+
+    Used by the staged solver at path-realisation time: for each
+    ``(cell, timestep)`` with active robots the solver builds a small
+    joint PRM whose joint *entry* and joint *exit* configurations are
+    inserted as explicit nodes, so there is no "nearest neighbour"
+    approximation at the endpoints.
+
+    Slot layout of every node in the returned graph::
+
+        (transit_0, …, transit_{n-1}, holder_0, …, holder_{m-1})
+
+    where ``n = len(entry_positions) = len(exit_positions)`` and
+    ``m = len(pinned_positions)``. Holder slots are pinned: every node
+    has its holder slots at exactly ``pinned_positions``, so holders do
+    not move along any path in the graph. Transit slots vary.
+
+    Args
+    ----
+    partition : the cell to plan inside.
+    entry_positions : current positions of the transit robots.
+    exit_positions : where each transit robot wants to end up (same
+        order as ``entry_positions``).
+    pinned_positions : positions of holding robots inside the cell.
+        Pinned to their current location at every node.
+    robot_radius : disc robot radius ``r``.
+    num_samples : number of random interior configurations to draw
+        (in addition to the explicit entry/exit nodes).
+    k_nearest : k-NN connection degree for the sampled graph.
+    steer_steps : discretisation of the swept-volume pairwise check.
+    rng : optional RNG for reproducibility.
+
+    Returns
+    -------
+    ``(graph, entry_cfg, exit_cfg)`` on success — the caller runs
+    ``nx.shortest_path(graph, entry_cfg, exit_cfg, weight='weight')``.
+    Returns ``None`` if the entry or exit joint configuration is
+    itself infeasible (pairwise 2r separation or cell containment
+    violated), which the caller should treat as a hard failure — no
+    silent fallback.
+    """
+    if rng is None:
+        rng = random.Random()
+
+    poly = partition.polygon
+    r = robot_radius
+    min_sq = (2.0 * r) ** 2
+    n_transit = len(entry_positions)
+    n_pinned = len(pinned_positions)
+    k = n_transit + n_pinned
+
+    if len(exit_positions) != n_transit:
+        return None
+    if k == 0:
+        return None
+
+    entry_cfg: JointConfig = tuple(
+        list(entry_positions) + list(pinned_positions)
+    )
+    exit_cfg: JointConfig = tuple(
+        list(exit_positions) + list(pinned_positions)
+    )
+
+    # Validate entry/exit: all inside cell + pairwise 2r separation.
+    for cfg in (entry_cfg, exit_cfg):
+        if not _pairwise_separated(list(cfg), min_sq):
+            return None
+        for x, y in cfg:
+            if not _point_inside_polygon(poly, x, y):
+                return None
+
+    # Narrow-cell margin fallback: try r-inset sampling first, fall
+    # back to 0 if even a single-robot r-inset probe fails.
+    margin = r
+    probe = _sample_joint_config(
+        poly, 1, r, rng, boundary_margin=margin, max_tries_per_robot=50,
+        checker=checker,
+    )
+    if probe is None:
+        margin = 0.0
+
+    graph = nx.Graph()
+    samples: List[JointConfig] = []
+
+    graph.add_node(entry_cfg)
+    samples.append(entry_cfg)
+    if exit_cfg != entry_cfg:
+        graph.add_node(exit_cfg)
+        samples.append(exit_cfg)
+
+    # Random interior samples with holders pinned.
+    pinned_arg = list(pinned_positions) if n_pinned > 0 else None
+    for _ in range(num_samples):
+        raw = _sample_joint_config(
+            poly, k, r, rng,
+            pinned=pinned_arg,
+            boundary_margin=margin,
+            checker=checker,
+        )
+        if raw is None:
+            continue
+        # ``_sample_joint_config`` returns pinned positions first, then
+        # the newly sampled ones. Reorder to (transits…, holders…) so
+        # slot indices line up with ``entry_cfg`` and ``exit_cfg``.
+        if n_pinned > 0:
+            cfg = tuple(list(raw[n_pinned:]) + list(raw[:n_pinned]))
+        else:
+            cfg = raw
+        if cfg in graph:
+            continue
+        graph.add_node(cfg)
+        samples.append(cfg)
+
+    # k-NN connection with swept-volume pairwise check.
+    for i, ci in enumerate(samples):
+        candidates = sorted(
+            (
+                (_config_distance(ci, cj), j)
+                for j, cj in enumerate(samples)
+                if j != i
+            ),
+            key=lambda pair: pair[0],
+        )[:k_nearest]
+        for distance, j in candidates:
+            cj = samples[j]
+            if graph.has_edge(ci, cj):
+                continue
+            if _steer_collision_free(
+                ci, cj, r, steer_steps, poly=poly, checker=checker,
+            ):
+                graph.add_edge(ci, cj, weight=distance)
+
+    return graph, entry_cfg, exit_cfg

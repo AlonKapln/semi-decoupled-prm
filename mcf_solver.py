@@ -316,6 +316,18 @@ def _solve_sequential(
     densities = _cell_densities(hlg)
     node_to_cells = _build_node_to_cells(hlg)
 
+    # Position-equivalence map: nodes at the same geometric position
+    # (e.g. start_i and goal_j when robots swap endpoints) must be
+    # treated as identical for vertex/swap conflict checks.
+    pos_to_nodes: Dict[Tuple[float, float], List[str]] = {}
+    for n, pos in hlg.node_positions.items():
+        key = (round(pos[0], 6), round(pos[1], 6))
+        pos_to_nodes.setdefault(key, []).append(n)
+    node_equiv: Dict[str, List[str]] = {}
+    for n, pos in hlg.node_positions.items():
+        key = (round(pos[0], 6), round(pos[1], 6))
+        node_equiv[n] = pos_to_nodes[key]
+
     if robot_order is None:
         robot_order = list(range(num_robots))
 
@@ -335,6 +347,7 @@ def _solve_sequential(
         path = _astar_time_expanded(
             G, start_node, goal_node, T,
             reservation, node_to_cells, densities, hlg,
+            node_equiv,
         )
         if path is None:
             if verbose:
@@ -370,6 +383,7 @@ def _astar_time_expanded(
     node_to_cells: Dict[str, List[int]],
     densities: Dict[int, int],
     hlg: HighLevelGraph,
+    node_equiv: Optional[Dict[str, List[str]]] = None,
 ) -> Optional[List[str]]:
     """A* on (node, time) state space with capacity constraints."""
 
@@ -427,16 +441,27 @@ def _astar_time_expanded(
             ):
                 continue
 
-            # Vertex conflict: no two robots at the same node at the
-            # same time — geometrically they'd overlap.
-            if reservation.get(next_node, {}).get(next_time, set()):
+            # Vertex conflict: no two robots at any geometrically-
+            # equivalent node at the same time — geometrically they'd
+            # overlap.  Equivalence captures e.g. start_i == goal_j when
+            # robots swap endpoints.
+            equiv_next = (
+                node_equiv.get(next_node, [next_node])
+                if node_equiv else [next_node]
+            )
+            if any(
+                reservation.get(en, {}).get(next_time, set())
+                for en in equiv_next
+            ):
                 continue
 
             # Reject edge-swap conflicts: if another robot moves from
             # next_node → node at the same timestep, the two robots
             # would cross through each other during interpolation.
-            if next_node != node and _swap_conflict(
-                node, next_node, time, reservation,
+            # Use position equivalence so geometric swaps are caught
+            # even when the graph nodes are technically different.
+            if next_node != node and _swap_conflict_equiv(
+                node, next_node, time, reservation, node_equiv,
             ):
                 continue
 
@@ -469,6 +494,34 @@ def _swap_conflict(
         return False
     robots_at_from_next = reservation.get(from_node, {}).get(time + 1, set())
     # If any robot is at to_node now AND at from_node next step, it's a swap
+    return bool(robots_at_to & robots_at_from_next)
+
+
+def _swap_conflict_equiv(
+    from_node: str,
+    to_node: str,
+    time: int,
+    reservation: Dict[str, Dict[int, Set[int]]],
+    node_equiv: Optional[Dict[str, List[str]]],
+) -> bool:
+    """Position-aware swap detection.
+
+    A swap is detected if any robot reserved at a node geometrically
+    equivalent to ``to_node`` at ``time`` is reserved at a node
+    geometrically equivalent to ``from_node`` at ``time + 1``.
+    """
+    if node_equiv is None:
+        return _swap_conflict(from_node, to_node, time, reservation)
+    equiv_to = node_equiv.get(to_node, [to_node])
+    equiv_from = node_equiv.get(from_node, [from_node])
+    robots_at_to = set()
+    for n in equiv_to:
+        robots_at_to |= reservation.get(n, {}).get(time, set())
+    if not robots_at_to:
+        return False
+    robots_at_from_next = set()
+    for n in equiv_from:
+        robots_at_from_next |= reservation.get(n, {}).get(time + 1, set())
     return bool(robots_at_to & robots_at_from_next)
 
 

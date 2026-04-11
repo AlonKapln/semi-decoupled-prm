@@ -201,3 +201,55 @@ def partition_free_space_vertical(
             continue
         partitions.append(Partition(polygon=poly, robot_radius=robot_radius))
     return partitions, arr
+
+
+def partition_free_space_grid(
+        scene: Scene,
+        robot_radius: float,
+        eps: float = 1e-4,
+        max_cell_density: int = 4,
+) -> Tuple[List[Partition], Arrangement_2]:
+    """Partition free space with a *pure grid* — no vertical decomposition.
+
+    Alternative to ``partition_free_space_vertical`` for scenes where
+    vertical decomposition produces narrow slivers (cells narrower than
+    ``2r``) that the ad-hoc joint PRM cannot separate safely. By skipping
+    ``_vertical_decompose`` entirely and relying solely on the regular grid
+    in ``_refine_with_grid``, cells are coarser and stay comfortably wide
+    as long as ``max_cell_density`` is chosen so the grid spacing is at
+    least ``2r`` on each side (the ``_refine_with_grid`` floor of ``4r``
+    already guarantees this).
+
+    Trade-offs
+    ----------
+    - Cells are **not guaranteed convex**. The inflated-obstacle boundaries
+      carve curved notches into cells that touch them. The downstream code
+      (``build_adhoc_roadmap``, ``_inset_toward_centroid``) already handles
+      non-convex partitions via closed point-in-polygon tests.
+    - For a given ``max_cell_density`` the grid version typically yields
+      *fewer*, bigger cells than the vertical+grid version, so the HLG and
+      MCF are smaller. Trade: less precise capacity control inside large
+      open regions.
+    - Use this mode on scenes with axis-aligned obstacles and narrow
+      corridors (warehouses, office layouts). Prefer the vertical mode for
+      scenes with diagonal obstacles where vertical cuts align with
+      natural cell boundaries.
+
+    Parameters
+    ----------
+    max_cell_density :
+        Passed through to ``_refine_with_grid``. Same meaning as in
+        ``partition_free_space_vertical``.
+    """
+    arr = construct_free_space(scene, robot_radius=robot_radius, eps=eps)
+    arr = _refine_with_grid(arr, robot_radius, max_cell_density)
+
+    partitions: List[Partition] = []
+    for face in arr.faces():
+        if face.is_unbounded() or face.data() != FREE:
+            continue
+        poly = _face_to_polygon(face)
+        if poly.size() < 3:
+            continue
+        partitions.append(Partition(polygon=poly, robot_radius=robot_radius))
+    return partitions, arr
