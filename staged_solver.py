@@ -71,9 +71,12 @@ numbers of waypoints are right-padded with a repeat of their final
 position (a hold), so every robot's ``Path`` has the same length.
 """
 
+import math
+import os
 import random
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Union
 
 import networkx as nx
 
@@ -93,6 +96,22 @@ from mcf_solver import MCFSolution, solve_mcf
 from partition import Partition
 from scene_partitioning import partition_free_space_grid
 from visualize_cells import draw_cells
+
+
+@dataclass
+class RealisationFailure:
+    """Why a particular (cell, timestep) could not be realised.
+
+    Surfaced by ``_realise_timestep`` and propagated by ``_realise_paths``
+    so ``_solve`` can run Level B retry (lower the offending cell's
+    density and re-run MCF).
+    """
+
+    cell_id: int
+    timestep: int
+    transit_robots: List[int]
+    holders: List[int]
+    reason: str  # from AdhocResult.reason
 
 
 def _point_in_partition(partition: Partition, x: float, y: float) -> bool:
@@ -163,6 +182,14 @@ class StagedSolver(Solver):
         self._arrangement = None
         self._hlg = None
 
+        # P1.1 sample-reuse cache: ``(cell_id, n_transit, frozenset of
+        # rounded pinned positions)`` → list of interior joint configs
+        # accepted by the most recent ``build_adhoc_roadmap`` call with
+        # that shape. Reset per solve in ``_solve``.
+        self._sample_cache: Dict[
+            Tuple[int, int, frozenset], List[Tuple[Tuple[float, float], ...]]
+        ] = {}
+
     def get_arrangement(self):
         """Return the free-space arrangement for solver_viewer display."""
         return self._arrangement
@@ -204,6 +231,9 @@ class StagedSolver(Solver):
         robot_radius = robots[0].radius.to_double()
         verbose = getattr(self, "verbose", False)
         writer = getattr(self, "writer", None)
+        # Fresh cache per solve — stale entries across solves would
+        # feed the wrong cell into ``build_adhoc_roadmap``.
+        self._sample_cache = {}
 
         def log(msg: str) -> None:
             if verbose and writer:
@@ -282,39 +312,85 @@ class StagedSolver(Solver):
                 partition.update_density(new_density)
 
         # --- Save a cell decomposition snapshot ---
-        # Every solve drops a timestamped PNG into visualizations/ so the
-        # user can eyeball the partition + port layout that MCF is about
-        # to plan on. Failures here (missing matplotlib, display issues)
-        # must never break solving.
+        # Every solve drops a PNG named ``{scene}_d{density}.png`` into
+        # visualizations/ so the user can eyeball the partition + port
+        # layout that MCF is about to plan on. The scene stem is read
+        # from ``scene._source_path`` if the caller set it (test suite /
+        # CLI do); otherwise we fall back to ``"scene"``. Failures here
+        # (missing matplotlib, display issues) must never break solving.
         try:
+            src = getattr(scene, "_source_path", None)
+            stem = os.path.splitext(os.path.basename(src))[0] if src else "scene"
+            save_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "visualizations",
+                f"{stem}_d{self.max_cell_density}.png",
+            )
             title = (
-                f"grid, density={self.max_cell_density}, "
+                f"{stem}, density={self.max_cell_density}, "
                 f"{len(partitions)} cells, "
                 f"{sum(len(p) for p in hlg.cell_boundary_ports.values()) // 2} ports, "
                 f"{num_robots} robots"
             )
             out = draw_cells(
-                scene, partitions, hlg, robot_radius, title=title,
+                scene, partitions, hlg, robot_radius,
+                save_path=save_path, title=title,
             )
             if out is not None:
                 log(f"  cell snapshot → {out}")
         except Exception as exc:  # noqa: BLE001 — viz is best-effort
             log(f"  cell snapshot skipped: {exc}")
 
-        # --- Step 6: MCF ---
+        # --- Steps 6-8: MCF + path realisation with Level B retry ---
+        # P0.2 Level B: if path realisation fails for a specific cell, drop
+        # that cell's density by 1, rebuild affected HLG edge capacities,
+        # and re-run MCF + realisation. Cap at ``max_retries`` attempts.
         T = self.time_horizon or estimate_time_horizon(hlg)
-        log(f"Step 6: solving MCF (T={T})...")
+        max_retries = 3
 
-        mcf_sol = solve_mcf(hlg, num_robots, T, verbose=verbose)
-        if mcf_sol is None:
-            log("  MCF found no solution")
-            return PathCollection()
+        for attempt in range(max_retries + 1):
+            log(f"Step 6: solving MCF (T={T}, attempt={attempt})...")
+            mcf_sol = solve_mcf(hlg, num_robots, T, verbose=verbose)
+            if mcf_sol is None:
+                log("  MCF found no solution")
+                return PathCollection()
 
-        # --- Steps 7+8: path realisation & stitching ---
-        log("Steps 7-8: realising geometric paths...")
-        return self._realise_paths(
-            mcf_sol, hlg, partitions, robots, robot_radius, log,
-        )
+            log("Steps 7-8: realising geometric paths...")
+            result = self._realise_paths(
+                mcf_sol, hlg, partitions, robots, robot_radius, log,
+            )
+            if isinstance(result, PathCollection):
+                return result
+
+            failure = result
+            part = partitions[failure.cell_id]
+            if part.density <= 1:
+                log(
+                    f"  cell {failure.cell_id} already at density 1 and "
+                    f"still failing (reason={failure.reason}, "
+                    f"t={failure.timestep}, "
+                    f"transits={failure.transit_robots}). Bailing."
+                )
+                return PathCollection()
+            # Halve instead of decrement: cells that need to collapse
+            # from e.g. density 8 to 1 would otherwise need 7 Level B
+            # attempts (each rerunning MCF). Halving converges in
+            # ⌈log2(d)⌉ retries.
+            new_density = max(1, part.density // 2)
+            log(
+                f"  Level B retry: cell {failure.cell_id} density "
+                f"{part.density} → {new_density} "
+                f"(reason={failure.reason}, t={failure.timestep})"
+            )
+            part.update_density(new_density)
+            # Keep HLG edge capacities in sync with the cell density —
+            # MCF reads capacity from edge attributes.
+            for u, v, data in hlg.graph.edges(data=True):
+                if data.get("cell_id") == failure.cell_id:
+                    data["capacity"] = new_density
+
+        log(f"  Exhausted {max_retries} Level B retries. Bailing.")
+        return PathCollection()
 
     # ------------------------------------------------------------------
     # Path realisation — ad-hoc per-(cell, timestep) joint PRM planning
@@ -328,17 +404,17 @@ class StagedSolver(Solver):
         robots,
         robot_radius: float,
         log,
-    ) -> PathCollection:
+    ) -> Union[PathCollection, RealisationFailure]:
         """Convert MCF node sequences into geometric discopygal paths.
 
         For each timestep, every cell with ≥ 1 active robot gets a fresh
         ad-hoc joint PRM built via ``cell_joint_prm.build_adhoc_roadmap``.
         Transit robots contribute explicit entry/exit configurations
         (precomputed per-cell port insets from the HLG); holders are
-        pinned at their actual current positions. A failure of the
-        ad-hoc PRM is fatal — we return an empty ``PathCollection``
-        rather than contaminate the solution with straight-line
-        fallbacks through raw port midpoints.
+        pinned at their actual current positions. On ad-hoc PRM failure
+        the method propagates a :class:`RealisationFailure` up to
+        ``_solve`` so the outer retry loop can lower the offending
+        cell's density and try again.
         """
         num_robots = len(robots)
         T = len(mcf_sol[0])
@@ -363,12 +439,13 @@ class StagedSolver(Solver):
         seed_base = self.prm_seed if self.prm_seed is not None else 0
 
         for t in range(T - 1):
-            timestep_segments = self._realise_timestep(
+            timestep_result = self._realise_timestep(
                 t, mcf_sol, hlg, partitions, current_pos, robot_radius,
                 seed_base, log,
             )
-            if timestep_segments is None:
-                return PathCollection()
+            if isinstance(timestep_result, RealisationFailure):
+                return timestep_result
+            timestep_segments = timestep_result
 
             # ---- Pad segments to a common length for this timestep ----
             max_seg = max(
@@ -400,13 +477,16 @@ class StagedSolver(Solver):
                         robots[r].start.y().to_double(),
                     )
                 ]
-            # Ensure the literal goal is the last waypoint (only legal
-            # non-inset position at the end of a path).
             goal = (
                 robots[r].end.x().to_double(),
                 robots[r].end.y().to_double(),
             )
-            wp[-1] = goal
+            # The last PRM exit config already places the robot at its
+            # literal goal via ``_node_position_in_cell("goal_r")``.
+            # Assert the invariant rather than silently forcing it.
+            assert math.hypot(wp[-1][0] - goal[0], wp[-1][1] - goal[1]) < 1e-6, (
+                f"robot {r}: last waypoint {wp[-1]} != declared goal {goal}"
+            )
             robot_waypoints[r] = wp
 
         max_len = max(
@@ -438,8 +518,13 @@ class StagedSolver(Solver):
         robot_radius: float,
         seed_base: int,
         log,
-    ) -> Optional[Dict[int, List[Tuple[float, float]]]]:
-        """Plan one MCF timestep. Returns per-robot segments or None on failure."""
+    ) -> Union[Dict[int, List[Tuple[float, float]]], RealisationFailure]:
+        """Plan one MCF timestep.
+
+        Returns per-robot segments on success, or a ``RealisationFailure``
+        describing the cell / timestep / reason on failure. The outer
+        ``_solve`` retry loop uses the failure to target a density reduction.
+        """
         num_robots = len(current_pos)
 
         # Classify robots: holding (src == dst), or transiting via a
@@ -493,17 +578,26 @@ class StagedSolver(Solver):
 
             pinned = [current_pos[r] for r in holders_here]
 
-            cfg_path = self._plan_adhoc(
+            base_samples = self._effective_num_samples(partition)
+            cfg_path, reason = self._plan_adhoc(
                 partition, transit_entries, transit_exits, pinned,
                 robot_radius, seed_base, cell_id, t,
+                base_samples=base_samples,
             )
             if cfg_path is None:
                 transit_robots = [rr for rr, _, _ in transitions]
                 log(
                     f"  ad-hoc PRM failed at t={t}, cell={cell_id}, "
-                    f"transits={transit_robots}, holders={holders_here}"
+                    f"transits={transit_robots}, holders={holders_here}, "
+                    f"reason={reason}"
                 )
-                return None
+                return RealisationFailure(
+                    cell_id=cell_id,
+                    timestep=t,
+                    transit_robots=transit_robots,
+                    holders=list(holders_here),
+                    reason=reason or "unknown",
+                )
 
             n_transit = len(transitions)
             for slot, (r, _src, _dst) in enumerate(transitions):
@@ -522,6 +616,17 @@ class StagedSolver(Solver):
     # Ad-hoc PRM helpers
     # ------------------------------------------------------------------
 
+    def _effective_num_samples(self, partition: Partition) -> int:
+        """Sample count for this cell's ad-hoc PRM.
+
+        Scales ``self.num_samples`` by ``min(4.0, √complexity)`` so harder
+        cells (elongated, arc-carved) get proportionally more samples. The
+        square root dampens; the ``min(4.0, …)`` cap prevents pathological
+        cells from blowing up runtime.
+        """
+        multiplier = min(4.0, math.sqrt(partition.complexity))
+        return max(1, int(self.num_samples * multiplier))
+
     def _plan_adhoc(
         self,
         partition: Partition,
@@ -532,11 +637,20 @@ class StagedSolver(Solver):
         seed_base: int,
         cell_id: int,
         t: int,
-    ) -> Optional[List[Tuple[Tuple[float, float], ...]]]:
-        """Build an ad-hoc joint PRM and return a node path entry→exit.
+        base_samples: Optional[int] = None,
+    ) -> Tuple[Optional[List[Tuple[Tuple[float, float], ...]]], Optional[str]]:
+        """Build an ad-hoc joint PRM and return ``(cfg_path, reason)``.
 
-        Retries once with ``2 * num_samples`` if the first attempt fails
-        to produce a path. Returns ``None`` on hard failure.
+        Level A retry: escalate sample count exponentially (1×, 2×, 4×, 8×).
+        If the first attempt fails with ``entry_infeasible`` or
+        ``exit_infeasible`` we short-circuit — no amount of extra sampling
+        rescues a joint endpoint that itself violates pairwise 2r or cell
+        containment. Those failures go straight back to the caller so the
+        outer solver retry (Level B) can decide what to do.
+
+        ``base_samples`` overrides ``self.num_samples`` (used by P0.1 to
+        scale per-cell by geometric complexity). ``None`` → use
+        ``self.num_samples`` as-is.
         """
         seed = hash(
             (
@@ -549,10 +663,22 @@ class StagedSolver(Solver):
             )
         ) & 0xFFFFFFFF
 
-        for attempt, nsamples in (
-            (0, self.num_samples),
-            (1, self.num_samples * 2),
-        ):
+        # P1.1 cache key: cell + transit count + pinned-holder set. Pinned
+        # positions are rounded so tiny float drift between timesteps
+        # (holders re-pinned from their last segment's final waypoint)
+        # does not invalidate the cache.
+        cache_key = (
+            cell_id,
+            len(transit_entries),
+            frozenset(
+                (round(x, 6), round(y, 6)) for x, y in pinned
+            ),
+        )
+        cached = self._sample_cache.get(cache_key)
+
+        base = base_samples if base_samples is not None else self.num_samples
+        last_reason: Optional[str] = None
+        for attempt, nsamples in enumerate((base, base * 2, base * 4, base * 8)):
             rng = random.Random((seed + attempt) & 0xFFFFFFFF)
             result = build_adhoc_roadmap(
                 partition,
@@ -564,17 +690,26 @@ class StagedSolver(Solver):
                 k_nearest=self.k_nearest,
                 rng=rng,
                 checker=self._collision_checker,
+                reuse_samples=cached,
             )
-            if result is None:
+            last_reason = result.reason
+            if result.reason in ("entry_infeasible", "exit_infeasible"):
+                # More samples won't fix a bad endpoint.
+                return None, result.reason
+            if result.graph is None:
                 continue
-            graph, entry_cfg, exit_cfg = result
+            entry_cfg, exit_cfg = result.entry_cfg, result.exit_cfg
             if entry_cfg == exit_cfg:
-                return [entry_cfg]
+                self._sample_cache[cache_key] = list(result.interior_samples)
+                return [entry_cfg], None
             try:
-                return nx.shortest_path(
-                    graph, entry_cfg, exit_cfg, weight="weight",
+                path = nx.shortest_path(
+                    result.graph, entry_cfg, exit_cfg, weight="weight",
                 )
+                self._sample_cache[cache_key] = list(result.interior_samples)
+                return path, None
             except nx.NetworkXNoPath:
+                last_reason = "no_path"
                 continue
-        return None
+        return None, last_reason
 

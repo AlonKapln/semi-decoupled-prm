@@ -1,0 +1,104 @@
+{
+  "__class__": "Scene",
+  "obstacles": [
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -6,
+          -5.01
+        ],
+        [
+          6,
+          -5.01
+        ],
+        [
+          6,
+          -5
+        ],
+        [
+          -6,
+          -5
+        ]
+      ],
+      "data": {}
+    }
+  ],
+  "robots": [
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.35,
+      "start": [
+        -4,
+        0
+      ],
+      "end": [
+        4,
+        0
+      ],
+      "data": {
+        "color": "red",
+        "name": "E",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.35,
+      "start": [
+        4,
+        0
+      ],
+      "end": [
+        -4,
+        0
+      ],
+      "data": {
+        "color": "blue",
+        "name": "W",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.35,
+      "start": [
+        0,
+        -4
+      ],
+      "end": [
+        0,
+        4
+      ],
+      "data": {
+        "color": "green",
+        "name": "N",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.35,
+      "start": [
+        0,
+        4
+      ],
+      "end": [
+        0,
+        -4
+      ],
+      "data": {
+        "color": "orange",
+        "name": "S",
+        "value": "",
+        "details": ""
+      }
+    }
+  ],
+  "metadata": {
+    "note": "4-way compass swap, no obstacles"
+  }
+}

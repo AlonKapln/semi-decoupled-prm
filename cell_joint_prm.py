@@ -25,6 +25,7 @@ and check each robot's segment against the scene collision checker.
 
 import math
 import random
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import networkx as nx
@@ -40,6 +41,33 @@ from partition import Partition
 JointConfig = Tuple[Tuple[float, float], ...]
 
 DEFAULT_STEER_STEPS = 10
+
+
+@dataclass
+class AdhocResult:
+    """Return value of :func:`build_adhoc_roadmap`.
+
+    ``graph`` is ``None`` on failure; in that case ``reason`` names the
+    failure mode. The caller (``StagedSolver._plan_adhoc``) uses ``reason``
+    to decide whether escalating ``num_samples`` can help (``no_path`` and
+    ``sampling_failed`` → yes; ``entry_infeasible`` / ``exit_infeasible``
+    → no, the problem is the fixed endpoints).
+
+    ``interior_samples`` is the list of pure-random interior configs that
+    ended up accepted this build (i.e. not entry/exit, not bridge-burst).
+    The solver caches this per ``(cell_id, n_transit, pinned)`` and feeds
+    it back as ``reuse_samples`` on the next call with the same
+    configuration — saves the cost of re-drawing valid joint configs for
+    repeat visits to the same cell.
+    """
+
+    graph: Optional[nx.Graph]
+    entry_cfg: JointConfig
+    exit_cfg: JointConfig
+    interior_samples: List[JointConfig] = field(default_factory=list)
+    reason: Optional[str] = None
+    # Reason values: None (success), "entry_infeasible",
+    # "exit_infeasible", "no_path", "sampling_failed".
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +304,8 @@ def build_adhoc_roadmap(
     steer_steps: int = DEFAULT_STEER_STEPS,
     rng: Optional[random.Random] = None,
     checker=None,
-) -> Optional[Tuple[nx.Graph, JointConfig, JointConfig]]:
+    reuse_samples: Optional[List[JointConfig]] = None,
+) -> AdhocResult:
     """Build a single-timestep joint PRM for one cell.
 
     Used by the staged solver at path-realisation time: for each
@@ -311,12 +340,12 @@ def build_adhoc_roadmap(
 
     Returns
     -------
-    ``(graph, entry_cfg, exit_cfg)`` on success — the caller runs
-    ``nx.shortest_path(graph, entry_cfg, exit_cfg, weight='weight')``.
-    Returns ``None`` if the entry or exit joint configuration is
-    itself infeasible (pairwise 2r separation or cell containment
-    violated), which the caller should treat as a hard failure — no
-    silent fallback.
+    An :class:`AdhocResult`. On success ``result.graph`` is a populated
+    networkx graph and ``result.reason is None``; the caller runs
+    ``nx.shortest_path(result.graph, result.entry_cfg, result.exit_cfg,
+    weight='weight')``. On failure ``result.graph is None`` and
+    ``result.reason`` names the failure mode so the caller can decide
+    whether more samples would help.
     """
     if rng is None:
         rng = random.Random()
@@ -328,11 +357,6 @@ def build_adhoc_roadmap(
     n_pinned = len(pinned_positions)
     k = n_transit + n_pinned
 
-    if len(exit_positions) != n_transit:
-        return None
-    if k == 0:
-        return None
-
     entry_cfg: JointConfig = tuple(
         list(entry_positions) + list(pinned_positions)
     )
@@ -340,13 +364,17 @@ def build_adhoc_roadmap(
         list(exit_positions) + list(pinned_positions)
     )
 
+    if len(exit_positions) != n_transit or k == 0:
+        return AdhocResult(None, entry_cfg, exit_cfg, reason="entry_infeasible")
+
     # Validate entry/exit: all inside cell + pairwise 2r separation.
-    for cfg in (entry_cfg, exit_cfg):
+    for cfg, tag in ((entry_cfg, "entry_infeasible"),
+                     (exit_cfg, "exit_infeasible")):
         if not _pairwise_separated(list(cfg), min_sq):
-            return None
+            return AdhocResult(None, entry_cfg, exit_cfg, reason=tag)
         for x, y in cfg:
             if not _point_inside_polygon(poly, x, y):
-                return None
+                return AdhocResult(None, entry_cfg, exit_cfg, reason=tag)
 
     # Narrow-cell margin fallback: try r-inset sampling first, fall
     # back to 0 if even a single-robot r-inset probe fails.
@@ -360,12 +388,44 @@ def build_adhoc_roadmap(
 
     graph = nx.Graph()
     samples: List[JointConfig] = []
+    interior_samples: List[JointConfig] = []
 
     graph.add_node(entry_cfg)
     samples.append(entry_cfg)
     if exit_cfg != entry_cfg:
         graph.add_node(exit_cfg)
         samples.append(exit_cfg)
+
+    # Reused samples from the solver's cache (same cell, same n_transit,
+    # same pinned set). Re-validate each one — cell density may have been
+    # lowered by a Level B retry or the checker state may differ, so a
+    # previously-valid sample is not automatically valid now.
+    if reuse_samples:
+        for cfg in reuse_samples:
+            if len(cfg) != k:
+                continue
+            # Holder slots must still match current pinned positions.
+            if n_pinned > 0 and tuple(cfg[n_transit:]) != tuple(pinned_positions):
+                continue
+            if cfg in graph:
+                continue
+            if not _pairwise_separated(list(cfg), min_sq):
+                continue
+            bad = False
+            for x, y in cfg:
+                if not _point_inside_polygon(poly, x, y):
+                    bad = True
+                    break
+                if checker is not None and not checker.is_point_valid(
+                    Point_2(FT(x), FT(y))
+                ):
+                    bad = True
+                    break
+            if bad:
+                continue
+            graph.add_node(cfg)
+            samples.append(cfg)
+            interior_samples.append(cfg)
 
     # Random interior samples with holders pinned.
     pinned_arg = list(pinned_positions) if n_pinned > 0 else None
@@ -389,6 +449,7 @@ def build_adhoc_roadmap(
             continue
         graph.add_node(cfg)
         samples.append(cfg)
+        interior_samples.append(cfg)
 
     # Anchor-local bridge samples. Validated ports already sit in
     # regions with a 2r escape, but the main random sampler still
@@ -459,4 +520,18 @@ def build_adhoc_roadmap(
                     anchor, other, weight=_config_distance(anchor, other),
                 )
 
-    return graph, entry_cfg, exit_cfg
+    # If only the explicit entry/exit nodes made it into the graph (every
+    # random sample was rejected), surface that as its own reason so the
+    # caller can escalate num_samples rather than lower cell density.
+    if len(samples) <= (2 if entry_cfg != exit_cfg else 1):
+        return AdhocResult(
+            graph, entry_cfg, exit_cfg,
+            interior_samples=interior_samples,
+            reason="sampling_failed",
+        )
+
+    return AdhocResult(
+        graph, entry_cfg, exit_cfg,
+        interior_samples=interior_samples,
+        reason=None,
+    )

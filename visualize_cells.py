@@ -302,12 +302,12 @@ def visualize(
         f"{hlg.graph.number_of_edges()} hlg edges, {num_ports} ports"
     )
 
-    # Default CLI save path: visualizations/<basename>_cells.png
+    # Default CLI save path: visualizations/<scene>_d<density>.png
     if save_path is None and not show_interactive:
         stem = os.path.splitext(os.path.basename(scene_path))[0]
         os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
         save_path = os.path.join(
-            DEFAULT_OUTPUT_DIR, f"{stem}_cells.png",
+            DEFAULT_OUTPUT_DIR, f"{stem}_d{density}.png",
         )
 
     title = (

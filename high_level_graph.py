@@ -19,15 +19,15 @@ from the ``a0()`` rational projection.
 Boundary-port placement
 -----------------------
 Each shared edge produces zero or more port nodes along subsegments
-where an ``r``-inward inset is valid on both sides **and** survives a
-``2r`` straight-line escape check (so ports never sit in dead-end
-pockets). Long edges get multiple ports spaced by
-``_MIN_PORT_SPACING_R * r`` so MCF sees parallel capacity channels
+where a ``_INSET_DEPTH_R·r`` inward inset is valid on both sides **and**
+survives a ``2r`` straight-line escape check (so ports never sit in
+dead-end pockets). Long edges get multiple ports spaced by
+``_MIN_PORT_SPACING_R·r`` so MCF sees parallel capacity channels
 instead of bottlenecking the wall on a single transit slot. Ports are
-also kept ``_PORT_EDGE_END_MARGIN_R * r`` away from edge endpoints, and
-per-cell proximity tracking rejects any candidate whose inset in either
-adjacent cell lands within that same minimum spacing of an
-already-placed inset.
+kept ``_PORT_EDGE_END_MARGIN_R·r`` away from edge endpoints, and
+per-cell proximity tracking rejects any candidate whose inset lands
+within ``_MIN_CROSS_EDGE_INSET_SEP_R·r`` of another port's inset on a
+different edge of the same cell.
 
 The ``cell_boundary_ports`` output maps each cell index to a ``{port_id:
 inset_position_inside_that_cell}`` dict: the per-side inset is
@@ -52,28 +52,51 @@ from partition import Partition
 # float noise.
 _COORD_PRECISION = 10
 
-# Shift port insets along the shared-edge tangent (in opposite
-# directions per side) so opposing insets are not directly perpendicular
-# across from each other. Without this, both sides inset by exactly r
-# land 2r apart and discopygal's swept-disc collision check reports
-# tangent contact between adjacent-cell robots as a collision.
-_PORT_TANGENT_OFFSET = 0.2
-
 # Minimum along-edge spacing (in units of robot radius) between adjacent
-# ports on the same shared edge. Same constant is reused for the
-# cross-edge proximity check so two ports on different shared edges of
-# the same cell are never closer in cell interior than this threshold.
-# Below ~8r the ad-hoc joint PRM struggles to find intermediate configs
-# for two transit robots near each other; above ~16r MCF
-# under-utilises long walls. 10r is the sweet spot.
+# parallel ports on the same shared edge. Below ~8r the ad-hoc joint PRM
+# struggles to find intermediate configs for two transit robots near
+# each other; above ~16r MCF under-utilises long walls. 10r is the sweet
+# spot.
 _MIN_PORT_SPACING_R = 10.0
+
+# Minimum distance (in units of robot radius) between two ports'
+# in-cell insets when the ports sit on *different* shared edges of the
+# same cell. The hard lower bound is 2r (joint-PRM pairwise separation);
+# 2.5r gives the ad-hoc PRM a little steering room without over-culling
+# short cross-edges near long walls.
+_MIN_CROSS_EDGE_INSET_SEP_R = 2.5
+
+# Inset depth, in units of robot radius, from the shared edge into each
+# adjacent cell. Must be strictly greater than 1.0 to avoid tangent
+# contact between opposing insets (at fraction 1.0 they'd sit exactly
+# ``2r`` apart, which ``verify_paths`` flags as collision). We use
+# 2.1r so that:
+#   - opposing insets are ``4.2r`` apart (float-safe by a wide margin),
+#   - a robot holding at an inset on one side is ``2.1r`` from the
+#     shared edge, so a robot sweeping across the edge in the
+#     neighbouring cell stays ``≥ 2.1r - r = 1.1r`` away (no cross-cell
+#     tangent collision).
+# Cells too narrow to admit a ``2.1r`` inset on either side simply get
+# no port on that edge — the alternative (sub-``r`` fallback insets)
+# produced opposing-inset tangents and cross-cell holder-vs-transit
+# collisions that are very hard to catch downstream.
+_INSET_DEPTH_R = 2.1
 
 # Margin (in units of robot radius) kept between any port and the
 # endpoints of its shared edge. Different shared edges of the same cell
-# meet at such endpoints, so trimming the valid region at each end
-# pushes ports away from corners and complements the per-cell proximity
-# check above.
-_PORT_EDGE_END_MARGIN_R = 3.0
+# meet at such endpoints; a port near a corner on one edge lands its
+# inset only ``(margin, _INSET_DEPTH_R · r)`` from the corner, and the
+# orthogonal edge's port inset lands ``(_INSET_DEPTH_R · r, margin)``
+# away — the two insets are then
+# ``sqrt((margin - _INSET_DEPTH_R·r)² · 2)`` apart.  Setting
+# ``_PORT_EDGE_END_MARGIN_R = 5`` keeps that distance safely above
+# ``_MIN_CROSS_EDGE_INSET_SEP_R · r`` (= 2.5 r), so ports on meeting
+# edges don't conflict through the per-cell proximity check and
+# connectivity is never lost because two orthogonal edges "collided" at
+# a shared corner. The margin is capped at 40% of edge length inside
+# ``_validated_port_positions``, so short edges still admit a centre
+# port.
+_PORT_EDGE_END_MARGIN_R = 5.0
 
 
 @dataclass
@@ -176,7 +199,7 @@ def _edge_inward_normal(
     return None
 
 
-def _max_valid_inset(
+def _fixed_inset(
         px: float,
         py: float,
         nx_: float,
@@ -185,25 +208,27 @@ def _max_valid_inset(
         robot_radius: float,
         checker,
 ) -> Optional[Tuple[float, float]]:
-    """Largest valid inset along ``(nx_, ny_)`` up to ``r``, or ``None``.
+    """Port inset at ``_INSET_DEPTH_R · r`` inward, or ``None``.
 
-    Tries a decreasing sequence of fractions of ``r``. Allowing sub-``r``
-    insets handles decomposition artifacts — thin slivers narrower than
-    ``r`` that a robot physically transits without ever needing 2r of
-    clearance on both sides. ``_has_2r_escape`` catches dead-end pockets
-    separately.
+    A fixed depth (rather than a greedy-maximise-with-fallbacks scheme)
+    keeps opposing insets a fixed ``2·_INSET_DEPTH_R·r`` apart and keeps
+    the inset ``(_INSET_DEPTH_R - 1)·r`` clear of the shared edge. The
+    second margin matters across cells: when a holder pins at this
+    inset, a transit sweeping through the neighbouring cell stays
+    strictly more than ``2r`` away.
+
+    Returns ``None`` if the inset is outside the cell polygon or the
+    scene checker rejects it — the port is dropped for that edge.
     """
-    for frac in (1.0, 0.75, 0.5, 0.35, 0.25, 0.15, 0.1, 0.05, 0.025, 0.01):
-        cx = px + frac * robot_radius * nx_
-        cy = py + frac * robot_radius * ny_
-        if not _point_in_polygon(poly, cx, cy):
-            continue
-        if checker is not None and not checker.is_point_valid(
+    cx = px + _INSET_DEPTH_R * robot_radius * nx_
+    cy = py + _INSET_DEPTH_R * robot_radius * ny_
+    if not _point_in_polygon(poly, cx, cy):
+        return None
+    if checker is not None and not checker.is_point_valid(
             Point_2(FT(cx), FT(cy)),
-        ):
-            continue
-        return (cx, cy)
-    return None
+    ):
+        return None
+    return (cx, cy)
 
 
 def _has_2r_escape(
@@ -253,29 +278,56 @@ def _sample_valid_insets(
         robot_radius: float,
         checker,
         samples: int,
+        forbid_near_i: Optional[List[Tuple[float, float]]] = None,
+        forbid_near_j: Optional[List[Tuple[float, float]]] = None,
 ) -> List[Optional[Tuple[Tuple[float, float], Tuple[float, float]]]]:
-    """For each sample index along the edge, the tangent-shifted
-    ``(inset_i, inset_j)`` pair if valid, else ``None``.
+    """For each sample index along the edge, the ``(inset_i, inset_j)``
+    pair if valid, else ``None``.
 
-    Validity requires per-side ``_max_valid_inset`` success, the
-    tangent-shifted variant staying inside both polygons and
-    checker-valid, and both insets admitting a 2r straight-line escape.
+    Each inset is placed ``_INSET_DEPTH_R · r`` inward via
+    ``_fixed_inset``. Both insets must be inside their cell, pass the
+    scene checker, and admit a 2r straight-line escape.
+
+    ``forbid_near_i`` / ``forbid_near_j`` are start/goal positions already
+    assigned to each incident cell. A transiting robot sweeps linearly
+    from ``inset_i`` to ``inset_j`` across the shared edge, and the
+    minimum disc-to-anchor distance along that sweep can be strictly
+    less than either endpoint distance — the port's crossing point on
+    the edge is closer to an anchor than either inset. We reject the
+    port if any anchor in either adjacent cell lies within ``2r`` of
+    the sweep *segment*, not just of its endpoints.
     """
     ni = _edge_inward_normal(v1, v2, poly_i)
     nj = _edge_inward_normal(v1, v2, poly_j)
     if ni is None or nj is None:
         return [None] * samples
 
-    tlen = math.hypot(v2[0] - v1[0], v2[1] - v1[1])
-    tx = (v2[0] - v1[0]) / tlen if tlen > 1e-12 else 0.0
-    ty = (v2[1] - v1[1]) / tlen if tlen > 1e-12 else 0.0
-    off = robot_radius * _PORT_TANGENT_OFFSET
+    anchor_min_dist_sq = (2.0 * robot_radius) ** 2
+    anchors = list(forbid_near_i or []) + list(forbid_near_j or [])
 
-    def _ok(poly, pt):
-        return _point_in_polygon(poly, pt[0], pt[1]) and (
-            checker is None
-            or checker.is_point_valid(Point_2(FT(pt[0]), FT(pt[1])))
-        )
+    def _seg_min_dist_sq(
+            px: float, py: float,
+            ax: float, ay: float,
+            bx: float, by: float,
+    ) -> float:
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        if L2 < 1e-24:
+            return (px - ax) ** 2 + (py - ay) ** 2
+        t_ = ((px - ax) * dx + (py - ay) * dy) / L2
+        t_ = max(0.0, min(1.0, t_))
+        qx, qy = ax + t_ * dx, ay + t_ * dy
+        return (px - qx) ** 2 + (py - qy) ** 2
+
+    def _sweep_too_close(
+            pi: Tuple[float, float], pj: Tuple[float, float],
+    ) -> bool:
+        for ax, ay in anchors:
+            if _seg_min_dist_sq(
+                    ax, ay, pi[0], pi[1], pj[0], pj[1],
+            ) < anchor_min_dist_sq:
+                return True
+        return False
 
     entries: List[
         Optional[Tuple[Tuple[float, float], Tuple[float, float]]]
@@ -284,28 +336,18 @@ def _sample_valid_insets(
         t = k / (samples - 1)
         px = v1[0] + t * (v2[0] - v1[0])
         py = v1[1] + t * (v2[1] - v1[1])
-        pi = _max_valid_inset(px, py, ni[0], ni[1], poly_i, robot_radius, checker)
+        pi = _fixed_inset(px, py, ni[0], ni[1], poly_i, robot_radius, checker)
         if pi is None:
             continue
-        pj = _max_valid_inset(px, py, nj[0], nj[1], poly_j, robot_radius, checker)
+        pj = _fixed_inset(px, py, nj[0], nj[1], poly_j, robot_radius, checker)
         if pj is None:
             continue
-
-        # Tangent offset: shift pi and pj in opposite directions along
-        # the shared edge so the two insets are NOT directly across
-        # from each other. Without this, both sides inset by exactly r
-        # along the perpendicular and sit exactly 2r apart, which
-        # discopygal's verify_paths reports as a tangent-disc collision
-        # when two robots cross the edge simultaneously.
-        if off > 0.0:
-            pi_shift = (pi[0] + tx * off, pi[1] + ty * off)
-            pj_shift = (pj[0] - tx * off, pj[1] - ty * off)
-            if _ok(poly_i, pi_shift) and _ok(poly_j, pj_shift):
-                pi, pj = pi_shift, pj_shift
 
         if not _has_2r_escape(pi[0], pi[1], poly_i, robot_radius, checker):
             continue
         if not _has_2r_escape(pj[0], pj[1], poly_j, robot_radius, checker):
+            continue
+        if anchors and _sweep_too_close(pi, pj):
             continue
         entries[k] = (pi, pj)
     return entries
@@ -336,6 +378,8 @@ def _validated_port_positions(
         poly_j: Pol2.Polygon_2,
         robot_radius: float,
         checker,
+        forbid_near_i: Optional[List[Tuple[float, float]]] = None,
+        forbid_near_j: Optional[List[Tuple[float, float]]] = None,
 ) -> List[Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]]:
     """Place **one or more** ports along a shared edge.
 
@@ -358,6 +402,7 @@ def _validated_port_positions(
     samples = max(21, int(edge_len / (0.5 * robot_radius)) + 1)
     entries = _sample_valid_insets(
         v1, v2, poly_i, poly_j, robot_radius, checker, samples,
+        forbid_near_i=forbid_near_i, forbid_near_j=forbid_near_j,
     )
 
     # Trim by end margin so ports never sit on an edge endpoint. Short
@@ -449,7 +494,7 @@ def build_high_level_graph(
     per_cell_insets: Dict[int, List[Tuple[float, float]]] = {
         i: [] for i in range(len(partitions))
     }
-    min_inset_sep_sq = (_MIN_PORT_SPACING_R * robot_radius) ** 2
+    min_inset_sep_sq = (_MIN_CROSS_EDGE_INSET_SEP_R * robot_radius) ** 2
 
     def _too_close(cell: int, point: Tuple[float, float]) -> bool:
         for qx, qy in per_cell_insets[cell]:
@@ -459,12 +504,33 @@ def build_high_level_graph(
                 return True
         return False
 
+    # Precompute which cells each start/goal lives in so port placement
+    # can reject inset candidates within 2r of any start/goal assigned
+    # to either incident cell. Starts/goals that sit exactly on a shared
+    # edge are registered against *every* containing cell (polygon
+    # containment is boundary-inclusive) — otherwise a port on the
+    # neighbouring cell's side is unaware of the anchor and may land
+    # within 2r of it.
+    cell_anchors: Dict[int, List[Tuple[float, float]]] = {
+        i: [] for i in range(len(partitions))
+    }
+    for sx, sy in robot_starts:
+        for ci_anchor, p in enumerate(partitions):
+            if _point_in_polygon(p.polygon, sx, sy):
+                cell_anchors[ci_anchor].append((sx, sy))
+    for gx, gy in robot_goals:
+        for ci_anchor, p in enumerate(partitions):
+            if _point_in_polygon(p.polygon, gx, gy):
+                cell_anchors[ci_anchor].append((gx, gy))
+
     port_id = 0
     for (ci, cj, v1, v2) in _find_shared_edges(partitions):
         for midpoint, inset_i, inset_j in _validated_port_positions(
             v1, v2,
             partitions[ci].polygon, partitions[cj].polygon,
             robot_radius, checker,
+            forbid_near_i=cell_anchors.get(ci),
+            forbid_near_j=cell_anchors.get(cj),
         ):
             if _too_close(ci, inset_i) or _too_close(cj, inset_j):
                 continue

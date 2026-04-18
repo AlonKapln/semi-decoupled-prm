@@ -193,14 +193,25 @@ def _astar_time_expanded(
         hlg: HighLevelGraph,
         node_equiv: Dict[str, List[str]],
 ) -> Optional[List[str]]:
-    """A* on ``(node, time)`` with vertex/swap conflicts and capacity."""
+    """A* on ``(node, time)`` with vertex/swap conflicts and capacity.
+
+    Uses kinematic edge cost (``cost`` attribute = Euclidean distance
+    between HLG node positions) for both the g-score step and the h
+    estimate (``single_source_dijkstra_path_length`` on the underlying
+    HLG, which is admissible because each realised segment is at least
+    as long as the straight-line distance).
+    """
     try:
-        dist_to_goal = nx.single_source_shortest_path_length(G, goal)
+        dist_to_goal = nx.single_source_dijkstra_path_length(
+            G, goal, weight="cost",
+        )
     except nx.NetworkXError:
         return None
 
     counter = 0
-    pq: List[Tuple] = [(dist_to_goal.get(start, T), 0, counter, start, 0)]
+    pq: List[Tuple] = [
+        (dist_to_goal.get(start, float("inf")), 0.0, counter, start, 0),
+    ]
     visited: Set[Tuple[str, int]] = set()
     came_from: Dict[Tuple[str, int], Tuple[str, int]] = {}
 
@@ -250,8 +261,12 @@ def _astar_time_expanded(
             ):
                 continue
 
-            new_g = g + (0 if next_node == node else 1)
-            h = dist_to_goal.get(next_node, T)
+            if next_node == node:
+                step_cost = 0.0  # hold — no geometric motion
+            else:
+                step_cost = G.edges[node, next_node].get("cost", 1.0)
+            new_g = g + step_cost
+            h = dist_to_goal.get(next_node, float("inf"))
             counter += 1
             heapq.heappush(
                 pq, (new_g + h, new_g, counter, next_node, next_time),

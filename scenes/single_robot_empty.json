@@ -1,0 +1,50 @@
+{
+  "__class__": "Scene",
+  "obstacles": [
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -5,
+          -5.01
+        ],
+        [
+          5,
+          -5.01
+        ],
+        [
+          5,
+          -5
+        ],
+        [
+          -5,
+          -5
+        ]
+      ],
+      "data": {}
+    }
+  ],
+  "robots": [
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        -4,
+        -4
+      ],
+      "end": [
+        4,
+        4
+      ],
+      "data": {
+        "color": "red",
+        "name": "R",
+        "value": "",
+        "details": ""
+      }
+    }
+  ],
+  "metadata": {
+    "note": "single robot, straight-line path, no obstacles"
+  }
+}

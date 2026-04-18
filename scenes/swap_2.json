@@ -1,0 +1,68 @@
+{
+  "__class__": "Scene",
+  "obstacles": [
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -10,
+          -5
+        ],
+        [
+          -9.99,
+          -5
+        ],
+        [
+          -9.99,
+          5
+        ],
+        [
+          -10,
+          5
+        ]
+      ],
+      "data": {}
+    }
+  ],
+  "robots": [
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        -4,
+        0
+      ],
+      "end": [
+        4,
+        0
+      ],
+      "data": {
+        "color": "red",
+        "name": "A",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        4,
+        0
+      ],
+      "end": [
+        -4,
+        0
+      ],
+      "data": {
+        "color": "blue",
+        "name": "B",
+        "value": "",
+        "details": ""
+      }
+    }
+  ],
+  "metadata": {
+    "note": "2-robot head-on swap in open space"
+  }
+}

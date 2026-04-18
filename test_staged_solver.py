@@ -241,6 +241,7 @@ def test_scene_1():
         print(f"  SKIP — {path} not found")
         return
     scene = Scene.from_file(path)
+    scene._source_path = path
     print(f"  {len(scene.robots)} robots, {len(scene.obstacles)} obstacles")
     pc = _run_solver(scene, num_samples=30, time_horizon=30)
     _check_paths(scene, pc, "scene_1")
@@ -254,6 +255,7 @@ def test_warehouse():
         print(f"  SKIP — {path} not found")
         return
     scene = Scene.from_file(path)
+    scene._source_path = path
     print(f"  {len(scene.robots)} robots, {len(scene.obstacles)} obstacles")
     pc = _run_solver(scene, num_samples=50, time_horizon=40)
     _check_paths(scene, pc, "warehouse")
