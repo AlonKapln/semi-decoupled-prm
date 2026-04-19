@@ -1,0 +1,134 @@
+{
+  "__class__": "Scene",
+  "obstacles": [
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          2,
+          2
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          2.2
+        ],
+        [
+          2,
+          2.2
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          2,
+          3.8
+        ],
+        [
+          4,
+          3.8
+        ],
+        [
+          4,
+          4
+        ],
+        [
+          2,
+          4
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          2,
+          2
+        ],
+        [
+          2.2,
+          2
+        ],
+        [
+          2.2,
+          4
+        ],
+        [
+          2,
+          4
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          3.8,
+          2
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          4
+        ],
+        [
+          3.8,
+          4
+        ]
+      ],
+      "data": {}
+    }
+  ],
+  "robots": [
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        -4,
+        -4
+      ],
+      "end": [
+        4,
+        -4
+      ],
+      "data": {
+        "color": "red",
+        "name": "A",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        -4,
+        0
+      ],
+      "end": [
+        3,
+        3
+      ],
+      "data": {
+        "color": "blue",
+        "name": "B",
+        "value": "",
+        "details": ""
+      }
+    }
+  ],
+  "metadata": {
+    "note": "unsolvable: second robot's goal is inside a sealed box"
+  }
+}

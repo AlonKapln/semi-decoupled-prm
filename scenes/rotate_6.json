@@ -1,0 +1,140 @@
+{
+  "__class__": "Scene",
+  "obstacles": [
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -7,
+          -7
+        ],
+        [
+          -6.99,
+          -7
+        ],
+        [
+          -6.99,
+          7
+        ],
+        [
+          -7,
+          7
+        ]
+      ],
+      "data": {}
+    }
+  ],
+  "robots": [
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.4,
+      "start": [
+        3.0,
+        0.0
+      ],
+      "end": [
+        1.5000000000000004,
+        2.598076211353316
+      ],
+      "data": {
+        "color": "red",
+        "name": "R0",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.4,
+      "start": [
+        1.5000000000000004,
+        2.598076211353316
+      ],
+      "end": [
+        -1.4999999999999996,
+        2.598076211353316
+      ],
+      "data": {
+        "color": "blue",
+        "name": "R1",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.4,
+      "start": [
+        -1.4999999999999996,
+        2.598076211353316
+      ],
+      "end": [
+        -3.0,
+        3.6739403974420594e-16
+      ],
+      "data": {
+        "color": "green",
+        "name": "R2",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.4,
+      "start": [
+        -3.0,
+        3.6739403974420594e-16
+      ],
+      "end": [
+        -1.5000000000000013,
+        -2.598076211353315
+      ],
+      "data": {
+        "color": "orange",
+        "name": "R3",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.4,
+      "start": [
+        -1.5000000000000013,
+        -2.598076211353315
+      ],
+      "end": [
+        1.5000000000000004,
+        -2.598076211353316
+      ],
+      "data": {
+        "color": "purple",
+        "name": "R4",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.4,
+      "start": [
+        1.5000000000000004,
+        -2.598076211353316
+      ],
+      "end": [
+        3.0,
+        0.0
+      ],
+      "data": {
+        "color": "cyan",
+        "name": "R5",
+        "value": "",
+        "details": ""
+      }
+    }
+  ],
+  "metadata": {
+    "note": "6-robot dense rotation on a circle"
+  }
+}

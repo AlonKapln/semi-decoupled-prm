@@ -1,0 +1,148 @@
+{
+  "__class__": "Scene",
+  "obstacles": [
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -1,
+          -1
+        ],
+        [
+          1,
+          -1
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          -1,
+          1
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -3.5,
+          -3.5
+        ],
+        [
+          -2.5,
+          -3.5
+        ],
+        [
+          -2.5,
+          3
+        ],
+        [
+          -3.5,
+          3
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          2.5,
+          -3
+        ],
+        [
+          3.5,
+          -3
+        ],
+        [
+          3.5,
+          3.5
+        ],
+        [
+          2.5,
+          3.5
+        ]
+      ],
+      "data": {}
+    }
+  ],
+  "robots": [
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        -5,
+        -5
+      ],
+      "end": [
+        5,
+        5
+      ],
+      "data": {
+        "color": "red",
+        "name": "A",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        5,
+        -5
+      ],
+      "end": [
+        -5,
+        5
+      ],
+      "data": {
+        "color": "blue",
+        "name": "B",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        -5,
+        5
+      ],
+      "end": [
+        5,
+        -5
+      ],
+      "data": {
+        "color": "green",
+        "name": "C",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.3,
+      "start": [
+        5,
+        5
+      ],
+      "end": [
+        -5,
+        -5
+      ],
+      "data": {
+        "color": "orange",
+        "name": "D",
+        "value": "",
+        "details": ""
+      }
+    }
+  ],
+  "metadata": {
+    "note": "4 robots, central + 2 side obstacles"
+  }
+}

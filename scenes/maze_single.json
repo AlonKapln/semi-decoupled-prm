@@ -1,0 +1,182 @@
+{
+  "__class__": "Scene",
+  "obstacles": [
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -5,
+          -5
+        ],
+        [
+          5,
+          -5
+        ],
+        [
+          5,
+          -4.8
+        ],
+        [
+          -5,
+          -4.8
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -5,
+          4.8
+        ],
+        [
+          5,
+          4.8
+        ],
+        [
+          5,
+          5
+        ],
+        [
+          -5,
+          5
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -5,
+          -5
+        ],
+        [
+          -4.8,
+          -5
+        ],
+        [
+          -4.8,
+          5
+        ],
+        [
+          -5,
+          5
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          4.8,
+          -5
+        ],
+        [
+          5,
+          -5
+        ],
+        [
+          5,
+          5
+        ],
+        [
+          4.8,
+          5
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -3,
+          -3
+        ],
+        [
+          -2,
+          -3
+        ],
+        [
+          -2,
+          3
+        ],
+        [
+          -3,
+          3
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          0,
+          -4
+        ],
+        [
+          1,
+          -4
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          0,
+          2
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          2.5,
+          -2
+        ],
+        [
+          3.5,
+          -2
+        ],
+        [
+          3.5,
+          4
+        ],
+        [
+          2.5,
+          4
+        ]
+      ],
+      "data": {}
+    }
+  ],
+  "robots": [
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.2,
+      "start": [
+        -4,
+        -4
+      ],
+      "end": [
+        4,
+        4
+      ],
+      "data": {
+        "color": "red",
+        "name": "R",
+        "value": "",
+        "details": ""
+      }
+    }
+  ],
+  "metadata": {
+    "note": "single robot, boxed maze with 3 interior walls"
+  }
+}

@@ -1,0 +1,1834 @@
+{
+  "__class__": "Scene",
+  "obstacles": [
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -6.0,
+          -5.0
+        ],
+        [
+          -4.0,
+          -5.0
+        ],
+        [
+          -4.0,
+          5.0
+        ],
+        [
+          -6.0,
+          5.0
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -1.0,
+          -5.0
+        ],
+        [
+          1.0,
+          -5.0
+        ],
+        [
+          1.0,
+          5.0
+        ],
+        [
+          -1.0,
+          5.0
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          4.0,
+          -5.0
+        ],
+        [
+          6.0,
+          -5.0
+        ],
+        [
+          6.0,
+          5.0
+        ],
+        [
+          4.0,
+          5.0
+        ]
+      ],
+      "data": {}
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -12.0,
+          -11.0
+        ],
+        [
+          -12.0,
+          10.0
+        ],
+        [
+          -13.0,
+          10.0
+        ],
+        [
+          -13.0,
+          -11.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -13.0,
+          -11.0
+        ],
+        [
+          -13.0,
+          -12.0
+        ],
+        [
+          12.0,
+          -12.0
+        ],
+        [
+          12.0,
+          -11.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -13.0,
+          10.0
+        ],
+        [
+          12.0,
+          10.0
+        ],
+        [
+          12.0,
+          11.0
+        ],
+        [
+          -13.0,
+          11.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -3.0,
+          1.0
+        ],
+        [
+          -2.0,
+          1.0
+        ],
+        [
+          -2.0,
+          2.0
+        ],
+        [
+          -3.0,
+          2.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          1.0,
+          1.0
+        ],
+        [
+          3.0,
+          1.0
+        ],
+        [
+          1.0,
+          2.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -3.0,
+          5.0
+        ],
+        [
+          -2.0,
+          5.0
+        ],
+        [
+          -2.0,
+          6.0
+        ],
+        [
+          -3.0,
+          6.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          -5.0,
+          -7.0
+        ],
+        [
+          -4.0,
+          -7.0
+        ],
+        [
+          -4.0,
+          -6.0
+        ],
+        [
+          -5.0,
+          -6.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          4.0,
+          -8.0
+        ],
+        [
+          5.0,
+          -8.0
+        ],
+        [
+          5.0,
+          -7.0
+        ],
+        [
+          4.0,
+          -7.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          2.0,
+          -3.0
+        ],
+        [
+          3.0,
+          -3.0
+        ],
+        [
+          3.0,
+          -2.0
+        ],
+        [
+          2.0,
+          -2.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          7.0,
+          1.0
+        ],
+        [
+          8.0,
+          1.0
+        ],
+        [
+          8.0,
+          2.0
+        ],
+        [
+          7.0,
+          2.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          11.0,
+          -11.0
+        ],
+        [
+          12.0,
+          -11.0
+        ],
+        [
+          12.0,
+          -1.0
+        ],
+        [
+          11.0,
+          -1.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          11.0,
+          1.0
+        ],
+        [
+          12.0,
+          1.0
+        ],
+        [
+          12.0,
+          10.0
+        ],
+        [
+          11.0,
+          10.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          12.0,
+          -1.0
+        ],
+        [
+          12.0,
+          -2.0
+        ],
+        [
+          20.0,
+          -2.0
+        ],
+        [
+          20.0,
+          -1.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          12.0,
+          1.0
+        ],
+        [
+          20.0,
+          1.0
+        ],
+        [
+          20.0,
+          2.0
+        ],
+        [
+          12.0,
+          2.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          20.0,
+          -1.0
+        ],
+        [
+          20.0,
+          -12.0
+        ],
+        [
+          21.0,
+          -12.0
+        ],
+        [
+          21.0,
+          -1.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          20.0,
+          1.0
+        ],
+        [
+          21.0,
+          1.0
+        ],
+        [
+          21.0,
+          11.0
+        ],
+        [
+          20.0,
+          11.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          21.0,
+          10.0
+        ],
+        [
+          43.0,
+          10.0
+        ],
+        [
+          43.0,
+          11.0
+        ],
+        [
+          21.0,
+          11.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          43.0,
+          11.0
+        ],
+        [
+          43.0,
+          -12.0
+        ],
+        [
+          44.0,
+          -12.0
+        ],
+        [
+          44.0,
+          11.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          43.0,
+          -12.0
+        ],
+        [
+          43.0,
+          -11.0
+        ],
+        [
+          21.0,
+          -11.0
+        ],
+        [
+          21.0,
+          -12.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          23.0,
+          -9.0
+        ],
+        [
+          25.0,
+          -9.0
+        ],
+        [
+          25.0,
+          -1.0
+        ],
+        [
+          23.0,
+          -1.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          23.0,
+          1.0
+        ],
+        [
+          25.0,
+          1.0
+        ],
+        [
+          25.0,
+          8.0
+        ],
+        [
+          23.0,
+          8.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          29.0,
+          -6.0
+        ],
+        [
+          41.0,
+          -6.0
+        ],
+        [
+          41.0,
+          -3.0
+        ],
+        [
+          29.0,
+          -3.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          29.0,
+          3.0
+        ],
+        [
+          41.0,
+          3.0
+        ],
+        [
+          41.0,
+          6.0
+        ],
+        [
+          29.0,
+          6.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          33.0,
+          -1.0
+        ],
+        [
+          37.0,
+          -1.0
+        ],
+        [
+          37.0,
+          1.0
+        ],
+        [
+          33.0,
+          1.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          33.0,
+          8.0
+        ],
+        [
+          41.0,
+          8.0
+        ],
+        [
+          33.0,
+          10.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          26.0,
+          5.0
+        ],
+        [
+          27.0,
+          5.0
+        ],
+        [
+          27.0,
+          6.0
+        ],
+        [
+          26.0,
+          6.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          27.0,
+          -5.0
+        ],
+        [
+          28.0,
+          -5.0
+        ],
+        [
+          28.0,
+          -4.0
+        ],
+        [
+          27.0,
+          -4.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          31.0,
+          -9.0
+        ],
+        [
+          32.0,
+          -9.0
+        ],
+        [
+          32.0,
+          -8.0
+        ],
+        [
+          31.0,
+          -8.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          40.0,
+          -9.0
+        ],
+        [
+          40.0,
+          -8.0
+        ],
+        [
+          37.0,
+          -8.0
+        ],
+        [
+          37.0,
+          -9.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "ObstaclePolygon",
+      "poly": [
+        [
+          26.0,
+          -8.0
+        ],
+        [
+          27.0,
+          -8.0
+        ],
+        [
+          27.0,
+          -7.0
+        ],
+        [
+          26.0,
+          -7.0
+        ]
+      ],
+      "data": {
+        "color": "",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    }
+  ],
+  "robots": [
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -8.0,
+        -8.0
+      ],
+      "end": [
+        8.0,
+        8.0
+      ],
+      "data": {
+        "color": "HSV 294,200,230",
+        "name": "R1",
+        "value": "",
+        "details": "Aisle 1 to Aisle 4"
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        8.0,
+        -8.0
+      ],
+      "end": [
+        -8.0,
+        8.0
+      ],
+      "data": {
+        "color": "HSV 103,200,230",
+        "name": "R2",
+        "value": "",
+        "details": "Aisle 4 to Aisle 1"
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -2.5,
+        8.0
+      ],
+      "end": [
+        2.5,
+        -8.0
+      ],
+      "data": {
+        "color": "HSV 239,200,230",
+        "name": "R3",
+        "value": "",
+        "details": "Aisle 2 to Aisle 3"
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        2.5,
+        8.0
+      ],
+      "end": [
+        -2.5,
+        -8.0
+      ],
+      "data": {
+        "color": "HSV 318,200,230",
+        "name": "R4",
+        "value": "",
+        "details": "Aisle 3 to Aisle 2"
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -9.0,
+        0.0
+      ],
+      "end": [
+        8.0,
+        0.0
+      ],
+      "data": {
+        "color": "HSV 271,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -3.0,
+        -8.0
+      ],
+      "end": [
+        5.0,
+        8.0
+      ],
+      "data": {
+        "color": "HSV 194,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -3.0,
+        0.0
+      ],
+      "end": [
+        -2.0,
+        3.0
+      ],
+      "data": {
+        "color": "HSV 8,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        2.0,
+        0.0
+      ],
+      "end": [
+        3.0,
+        3.0
+      ],
+      "data": {
+        "color": "HSV 350,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -3.0,
+        3.0
+      ],
+      "end": [
+        -2.0,
+        0.0
+      ],
+      "data": {
+        "color": "HSV 128,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        2.0,
+        3.0
+      ],
+      "end": [
+        3.0,
+        0.0
+      ],
+      "data": {
+        "color": "HSV 224,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -10.0,
+        -5.0
+      ],
+      "end": [
+        -9.0,
+        -3.0
+      ],
+      "data": {
+        "color": "HSV 137,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -11.0,
+        9.0
+      ],
+      "end": [
+        9.0,
+        5.0
+      ],
+      "data": {
+        "color": "HSV 244,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        0.0,
+        -9.0
+      ],
+      "end": [
+        7.0,
+        -2.0
+      ],
+      "data": {
+        "color": "HSV 70,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -10.0,
+        3.0
+      ],
+      "end": [
+        -10.0,
+        4.0
+      ],
+      "data": {
+        "color": "HSV 253,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        7.0,
+        4.0
+      ],
+      "end": [
+        10.0,
+        -6.0
+      ],
+      "data": {
+        "color": "HSV 334,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        7.0,
+        7.0
+      ],
+      "end": [
+        -4.0,
+        7.0
+      ],
+      "data": {
+        "color": "HSV 262,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        0.0,
+        8.0
+      ],
+      "end": [
+        0.0,
+        -7.0
+      ],
+      "data": {
+        "color": "HSV 269,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        5.0,
+        -9.0
+      ],
+      "end": [
+        4.0,
+        -6.0
+      ],
+      "data": {
+        "color": "HSV 50,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -11.0,
+        -10.0
+      ],
+      "end": [
+        10.0,
+        9.0
+      ],
+      "data": {
+        "color": "HSV 250,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        10.0,
+        -10.0
+      ],
+      "end": [
+        -10.0,
+        9.0
+      ],
+      "data": {
+        "color": "HSV 193,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -11.0,
+        -2.0
+      ],
+      "end": [
+        10.0,
+        -2.0
+      ],
+      "data": {
+        "color": "HSV 159,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        9.0,
+        3.0
+      ],
+      "end": [
+        -10.0,
+        1.0
+      ],
+      "data": {
+        "color": "HSV 195,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        9.0,
+        -7.0
+      ],
+      "end": [
+        -10.0,
+        6.0
+      ],
+      "data": {
+        "color": "HSV 137,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -3.0,
+        -10.0
+      ],
+      "end": [
+        -3.0,
+        -2.0
+      ],
+      "data": {
+        "color": "HSV 185,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        1.0,
+        -10.0
+      ],
+      "end": [
+        -3.0,
+        -1.0
+      ],
+      "data": {
+        "color": "HSV 26,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        3.0,
+        -10.0
+      ],
+      "end": [
+        -3.0,
+        4.0
+      ],
+      "data": {
+        "color": "HSV 48,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        6.0,
+        -10.0
+      ],
+      "end": [
+        -2.0,
+        4.0
+      ],
+      "data": {
+        "color": "HSV 20,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        5.0,
+        -10.0
+      ],
+      "end": [
+        -2.0,
+        -3.0
+      ],
+      "data": {
+        "color": "HSV 110,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        7.0,
+        -10.0
+      ],
+      "end": [
+        -2.0,
+        -2.0
+      ],
+      "data": {
+        "color": "HSV 284,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        8.0,
+        -10.0
+      ],
+      "end": [
+        -2.0,
+        -1.0
+      ],
+      "data": {
+        "color": "HSV 285,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -5.0,
+        -10.0
+      ],
+      "end": [
+        -3.0,
+        -4.0
+      ],
+      "data": {
+        "color": "HSV 64,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -7.0,
+        -10.0
+      ],
+      "end": [
+        -3.0,
+        -3.0
+      ],
+      "data": {
+        "color": "HSV 92,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -2.0,
+        -10.0
+      ],
+      "end": [
+        2.0,
+        -4.0
+      ],
+      "data": {
+        "color": "HSV 214,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        41.0,
+        -9.0
+      ],
+      "end": [
+        -11.0,
+        7.0
+      ],
+      "data": {
+        "color": "HSV 286,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        42.0,
+        9.0
+      ],
+      "end": [
+        -11.0,
+        -9.0
+      ],
+      "data": {
+        "color": "HSV 199,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        41.0,
+        -2.0
+      ],
+      "end": [
+        -10.0,
+        2.0
+      ],
+      "data": {
+        "color": "HSV 93,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        9.0,
+        7.0
+      ],
+      "end": [
+        31.0,
+        1.0
+      ],
+      "data": {
+        "color": "HSV 139,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        8.0,
+        9.0
+      ],
+      "end": [
+        29.0,
+        -10.0
+      ],
+      "data": {
+        "color": "HSV 235,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        -8.0,
+        -5.0
+      ],
+      "end": [
+        38.0,
+        2.0
+      ],
+      "data": {
+        "color": "HSV 84,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        4.0,
+        7.0
+      ],
+      "end": [
+        30.0,
+        8.0
+      ],
+      "data": {
+        "color": "HSV 51,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        27.0,
+        -2.0
+      ],
+      "end": [
+        10.0,
+        4.0
+      ],
+      "data": {
+        "color": "HSV 314,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        27.0,
+        1.0
+      ],
+      "end": [
+        -11.0,
+        -7.0
+      ],
+      "data": {
+        "color": "HSV 49,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        28.0,
+        9.0
+      ],
+      "end": [
+        -10.5,
+        -9.0
+      ],
+      "data": {
+        "color": "HSV 29,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        26.0,
+        -10.0
+      ],
+      "end": [
+        -11.0,
+        6.0
+      ],
+      "data": {
+        "color": "HSV 7,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        41.0,
+        0.0
+      ],
+      "end": [
+        -11.0,
+        1.0
+      ],
+      "data": {
+        "color": "HSV 97,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        22.0,
+        -3.0
+      ],
+      "end": [
+        -7.0,
+        -10.0
+      ],
+      "data": {
+        "color": "HSV 250,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        23.0,
+        -10.0
+      ],
+      "end": [
+        40.0,
+        2.0
+      ],
+      "data": {
+        "color": "HSV 246,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        35.0,
+        -10.0
+      ],
+      "end": [
+        28.0,
+        7.0
+      ],
+      "data": {
+        "color": "HSV 285,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        39.0,
+        -10.0
+      ],
+      "end": [
+        39.0,
+        7.0
+      ],
+      "data": {
+        "color": "HSV 211,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        28.0,
+        -10.0
+      ],
+      "end": [
+        39.0,
+        0.0
+      ],
+      "data": {
+        "color": "HSV 151,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        42.0,
+        -10.0
+      ],
+      "end": [
+        22.0,
+        9.0
+      ],
+      "data": {
+        "color": "HSV 164,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        22.0,
+        -7.0
+      ],
+      "end": [
+        42.0,
+        2.0
+      ],
+      "data": {
+        "color": "HSV 308,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    },
+    {
+      "__class__": "RobotDisc",
+      "radius": 0.1,
+      "start": [
+        31.0,
+        7.0
+      ],
+      "end": [
+        42.0,
+        -7.0
+      ],
+      "data": {
+        "color": "HSV 309,200,230",
+        "name": "",
+        "value": "",
+        "details": ""
+      }
+    }
+  ],
+  "metadata": {
+    "version": "1.4.5",
+    "solvers": "",
+    "details": ""
+  }
+}
