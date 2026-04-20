@@ -17,7 +17,6 @@ from discopygal.bindings import (
     Arrangement_2,
     Curve_2,
     FT,
-    Ker,
     Point_2,
     Pol2,
     Segment_2,
@@ -26,13 +25,6 @@ from discopygal.solvers_infra import Scene
 
 from partition import Partition
 from free_space_builder import FREE, construct_free_space
-
-
-def _to_ker_point_2(point) -> "Ker.Point_2":
-    """Convert a CGAL extended ``TPoint`` (used for arc endpoints) to a plain
-    ``Ker.Point_2`` by taking only the rational part. Mirrors
-    ``ExactSingle.to_ker_point_2``."""
-    return Ker.Point_2(point.x().a0(), point.y().a0())
 
 
 def _face_to_polygon(face) -> Pol2.Polygon_2:
@@ -158,15 +150,15 @@ def partition_free_space_grid(
         HLG/MCF). Higher values leave cells as large as the free-space
         topology allows.
     """
-    arr = construct_free_space(scene, robot_radius=robot_radius, eps=eps)
-    arr = _refine_with_grid(arr, robot_radius, max_cell_density)
+    arrangement = construct_free_space(scene, robot_radius=robot_radius, eps=eps)
+    arrangement = _refine_with_grid(arrangement, robot_radius, max_cell_density)
 
     partitions: List[Partition] = []
-    for face in arr.faces():
+    for face in arrangement.faces():
         if face.is_unbounded() or face.data() != FREE:
             continue
         poly = _face_to_polygon(face)
         if poly.size() < 3:
             continue
         partitions.append(Partition(polygon=poly, robot_radius=robot_radius))
-    return partitions, arr
+    return partitions, arrangement

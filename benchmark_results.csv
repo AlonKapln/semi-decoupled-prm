@@ -1,0 +1,137 @@
+scene,solver,num_robots,num_obstacles,params,status,elapsed_sec,num_paths,max_waypoints,verify_ok,notes
+single_robot_empty,Staged,1,1,"num_samples=40,k_nearest=8",ok,0.142,1,11,True,
+single_robot_empty,PRM,1,1,"num_landmarks=100,k_nn=15",ok,0.003,1,7,True,
+single_robot_empty,RRT,1,1,"num_landmarks=200,eta=0.5",ok,0.005,1,29,True,
+single_robot_empty,BiRRT,1,1,"num_landmarks=200,eta=0.5,n_join=5",ok,0.004,1,31,True,
+single_robot_empty,dRRT,1,1,"num_landmarks=100,k_nn=15,prm_num_landmarks=100",ok,0.022,1,6,True,
+single_robot_empty,dRRT_star,1,1,"num_expands=200,num_landmarks=100,k_nn=15,random_sample_counter=10",ok,1.102,1,2,True,
+single_robot_empty,StaggeredGrid,1,1,,timeout,300.081,,,,killed after 300.0s
+single_robot_empty,ExactSingle,1,1,eps=0.1,ok,0.002,1,2,True,
+L_corridor_single,Staged,1,3,"num_samples=40,k_nearest=8",empty,0.005,0,,,
+L_corridor_single,PRM,1,3,"num_landmarks=100,k_nn=15",crash,,,,,"NodeNotFound: Source 2 -4.5 -4.5 is not in G Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^"
+L_corridor_single,RRT,1,3,"num_landmarks=200,eta=0.5",crash,,,,,"IndexError: list index out of range Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 258, in _child     solver.load_scene(scene)   File ""/Users/alonkapl"
+L_corridor_single,BiRRT,1,3,"num_landmarks=200,eta=0.5,n_join=5",crash,,,,,"IndexError: list index out of range Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 258, in _child     solver.load_scene(scene)   File ""/Users/alonkapl"
+L_corridor_single,dRRT,1,3,"num_landmarks=100,k_nn=15,prm_num_landmarks=100",crash,,,,,"IndexError: list index out of range Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^   Fi"
+L_corridor_single,dRRT_star,1,3,"num_expands=200,num_landmarks=100,k_nn=15,random_sample_counter=10",crash,,,,,"IndexError: list index out of range Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^   Fi"
+L_corridor_single,StaggeredGrid,1,3,,timeout,300.003,,,,killed after 300.0s
+L_corridor_single,ExactSingle,1,3,eps=0.1,empty,0.002,0,,,
+maze_single,Staged,1,7,"num_samples=40,k_nearest=8",ok,0.311,1,16,True,
+maze_single,PRM,1,7,"num_landmarks=100,k_nn=15",ok,0.003,1,13,True,
+maze_single,RRT,1,7,"num_landmarks=200,eta=0.5",ok,0.005,1,36,True,
+maze_single,BiRRT,1,7,"num_landmarks=200,eta=0.5,n_join=5",ok,0.004,1,32,True,
+maze_single,dRRT,1,7,"num_landmarks=100,k_nn=15,prm_num_landmarks=100",ok,0.018,1,10,True,
+maze_single,dRRT_star,1,7,"num_expands=200,num_landmarks=100,k_nn=15,random_sample_counter=10",crash,,,,,"IndexError: Cannot choose from an empty sequence Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^"
+maze_single,StaggeredGrid,1,7,,timeout,300.004,,,,killed after 300.0s
+maze_single,ExactSingle,1,7,eps=0.1,ok,0.028,1,14,True,
+swap_2,Staged,2,1,"num_samples=50,k_nearest=8",ok,0.258,2,12,True,
+swap_2,PRM,2,1,"num_landmarks=200,k_nn=15",ok,0.003,2,5,True,
+swap_2,RRT,2,1,"num_landmarks=400,eta=0.5",ok,0.009,2,47,True,
+swap_2,BiRRT,2,1,"num_landmarks=400,eta=0.5,n_join=5",ok,0.012,2,60,True,
+swap_2,dRRT,2,1,"num_landmarks=200,k_nn=15,prm_num_landmarks=200",ok,0.089,2,9,True,
+swap_2,dRRT_star,2,1,"num_expands=400,num_landmarks=200,k_nn=15,random_sample_counter=10",crash,,,,,"NodeNotFound: Target 4 4 0 -4 0 is not in G Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^"
+swap_2,StaggeredGrid,2,1,,timeout,300.003,,,,killed after 300.0s
+swap_2,ExactSingle,2,1,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+narrow_corridor,Staged,2,2,"num_samples=50,k_nearest=8",empty,0.192,0,,,
+narrow_corridor,PRM,2,2,"num_landmarks=200,k_nn=15",empty,0.001,0,,,
+narrow_corridor,RRT,2,2,"num_landmarks=400,eta=0.5",empty,0.0,0,,,
+narrow_corridor,BiRRT,2,2,"num_landmarks=400,eta=0.5,n_join=5",empty,0.0,0,,,
+narrow_corridor,dRRT,2,2,"num_landmarks=200,k_nn=15,prm_num_landmarks=200",empty,0.16,0,,,
+narrow_corridor,dRRT_star,2,2,"num_expands=400,num_landmarks=200,k_nn=15,random_sample_counter=10",crash,,,,,"NodeNotFound: Target 4 8 0 -8 0 is not in G Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^"
+narrow_corridor,StaggeredGrid,2,2,,timeout,300.004,,,,killed after 300.0s
+narrow_corridor,ExactSingle,2,2,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+crossing_4,Staged,4,1,"num_samples=70,k_nearest=8",ok,0.489,4,12,True,
+crossing_4,PRM,4,1,"num_landmarks=1000,k_nn=15",ok,0.007,4,6,True,
+crossing_4,RRT,4,1,"num_landmarks=2000,eta=0.5",ok,0.042,4,96,True,
+crossing_4,BiRRT,4,1,"num_landmarks=2000,eta=0.5,n_join=5",ok,0.061,4,140,True,
+crossing_4,dRRT,4,1,"num_landmarks=1000,k_nn=15,prm_num_landmarks=1000",ok,1.106,4,41,True,
+crossing_4,dRRT_star,4,1,,timeout,300.004,,,,killed after 300.0s
+crossing_4,StaggeredGrid,4,1,,timeout,299.986,,,,killed after 300.0s
+crossing_4,ExactSingle,4,1,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+bottleneck_funnel,Staged,4,4,"num_samples=70,k_nearest=8",empty,16.991,0,,,
+bottleneck_funnel,PRM,4,4,"num_landmarks=1000,k_nn=15",ok,0.011,4,17,True,
+bottleneck_funnel,RRT,4,4,"num_landmarks=2000,eta=0.5",empty,0.0,0,,,
+bottleneck_funnel,BiRRT,4,4,"num_landmarks=2000,eta=0.5,n_join=5",empty,0.001,0,,,
+bottleneck_funnel,dRRT,4,4,"num_landmarks=1000,k_nn=15,prm_num_landmarks=1000",empty,1.002,0,,,
+bottleneck_funnel,dRRT_star,4,4,"num_expands=2000,num_landmarks=1000,k_nn=15,random_sample_counter=10",crash,,,,,"IndexError: Cannot choose from an empty sequence Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^"
+bottleneck_funnel,StaggeredGrid,4,4,,timeout,300.004,,,,killed after 300.0s
+bottleneck_funnel,ExactSingle,4,4,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+spiral_4,Staged,4,3,"num_samples=70,k_nearest=8",empty,0.122,0,,,
+spiral_4,PRM,4,3,"num_landmarks=1000,k_nn=15",empty,0.0,0,,,
+spiral_4,RRT,4,3,"num_landmarks=2000,eta=0.5",empty,0.0,0,,,
+spiral_4,BiRRT,4,3,"num_landmarks=2000,eta=0.5,n_join=5",empty,0.0,0,,,
+spiral_4,dRRT,4,3,"num_landmarks=1000,k_nn=15,prm_num_landmarks=1000",ok,1.304,4,69,True,
+spiral_4,dRRT_star,4,3,"num_expands=2000,num_landmarks=1000,k_nn=15,random_sample_counter=10",crash,,,,,"IndexError: Cannot choose from an empty sequence Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^"
+spiral_4,StaggeredGrid,4,3,,timeout,300.003,,,,killed after 300.0s
+spiral_4,ExactSingle,4,3,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+rotate_6,Staged,6,1,"num_samples=90,k_nearest=8",ok,0.875,6,11,True,
+rotate_6,PRM,6,1,"num_landmarks=2600,k_nn=15",ok,0.004,6,2,True,
+rotate_6,RRT,6,1,"num_landmarks=5200,eta=0.5",ok,0.034,6,45,True,
+rotate_6,BiRRT,6,1,"num_landmarks=5200,eta=0.5,n_join=5",empty,0.003,0,,,
+rotate_6,dRRT,6,1,"num_landmarks=2600,k_nn=15,prm_num_landmarks=2600",ok,5.427,6,42,True,
+rotate_6,dRRT_star,6,1,,timeout,300.04,,,,killed after 300.0s
+rotate_6,StaggeredGrid,6,1,,timeout,300.006,,,,killed after 300.0s
+rotate_6,ExactSingle,6,1,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+open_16,Staged,16,1,"num_samples=120,k_nearest=8",ok,5.6,16,23,True,
+open_16,PRM,16,1,"num_landmarks=15000,k_nn=15",empty,0.001,0,,,
+open_16,RRT,16,1,"num_landmarks=15000,eta=0.5",empty,0.0,0,,,
+open_16,BiRRT,16,1,"num_landmarks=15000,eta=0.5,n_join=5",empty,0.006,0,,,
+open_16,dRRT,16,1,"num_landmarks=15000,k_nn=15,prm_num_landmarks=15000",ok,190.013,16,525,True,
+open_16,dRRT_star,16,1,,timeout,300.031,,,,killed after 300.0s
+open_16,StaggeredGrid,16,1,,timeout,300.009,,,,killed after 300.0s
+open_16,ExactSingle,16,1,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+scene_1,Staged,8,0,"num_samples=110,k_nearest=8",ok,1.365,8,15,True,
+scene_1,PRM,8,0,"num_landmarks=5000,k_nn=15",ok,0.016,8,8,True,
+scene_1,RRT,8,0,"num_landmarks=10000,eta=0.5",empty,0.0,0,,,
+scene_1,BiRRT,8,0,"num_landmarks=10000,eta=0.5,n_join=5",empty,0.004,0,,,
+scene_1,dRRT,8,0,"num_landmarks=5000,k_nn=15,prm_num_landmarks=5000",empty,15.164,0,,,
+scene_1,dRRT_star,8,0,,timeout,299.869,,,,killed after 300.0s
+scene_1,StaggeredGrid,8,0,,timeout,299.999,,,,killed after 300.0s
+scene_1,ExactSingle,8,0,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+warehouse,Staged,15,7,"num_samples=120,k_nearest=8",ok,9.909,15,35,True,
+warehouse,PRM,15,7,"num_landmarks=15000,k_nn=15",empty,0.0,0,,,
+warehouse,RRT,15,7,,timeout,299.999,,,,killed after 300.0s
+warehouse,BiRRT,15,7,"num_landmarks=15000,eta=0.5,n_join=5",empty,0.001,0,,,
+warehouse,dRRT,15,7,"num_landmarks=15000,k_nn=15,prm_num_landmarks=15000",ok,134.296,15,402,True,
+warehouse,dRRT_star,15,7,"num_expands=3000,num_landmarks=15000,k_nn=15,random_sample_counter=10",crash,,,,,"IndexError: Cannot choose from an empty sequence Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^"
+warehouse,StaggeredGrid,15,7,,timeout,300.001,,,,killed after 300.0s
+warehouse,ExactSingle,15,7,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+tight_rooms,Staged,32,28,"num_samples=120,k_nearest=8",empty,2.606,0,,,
+tight_rooms,PRM,32,28,"num_landmarks=15000,k_nn=15",empty,0.0,0,,,
+tight_rooms,RRT,32,28,,timeout,299.999,,,,killed after 300.0s
+tight_rooms,BiRRT,32,28,"num_landmarks=15000,eta=0.5,n_join=5",crash,,,,,"NodeNotFound: Source 64 -12 -8 -11 8 -9 -8 -10 8 -6 -8 -5 8 -3 -8 -4 8 3 -8 2 8 9 -8 8 8 -13 -8 13 -7.7 -13 -4.8 13 -4.5 -13 -1.6 13 -1.3 -13 1.6 13 1.9 -13 4.8 13 5.1 -13 8 13 8.3 -12 -8 12 -8 -12 8 12 8 -12 0 12 2 -8 -9 8 -9 is not in G Traceback (most recent call last):   File ""/Users/alonkaplan/"
+tight_rooms,dRRT,32,28,,timeout,300.0,,,,killed after 300.0s
+tight_rooms,dRRT_star,32,28,"num_expands=3000,num_landmarks=15000,k_nn=15,random_sample_counter=10",crash,,,,,"IndexError: Cannot choose from an empty sequence Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^"
+tight_rooms,StaggeredGrid,32,28,,timeout,300.096,,,,killed after 300.0s
+tight_rooms,ExactSingle,32,28,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+extreme_warehouse,Staged,33,14,"num_samples=120,k_nearest=8",ok,34.447,33,59,True,
+extreme_warehouse,PRM,33,14,"num_landmarks=15000,k_nn=15",empty,0.0,0,,,
+extreme_warehouse,RRT,33,14,,timeout,300.002,,,,killed after 300.0s
+extreme_warehouse,BiRRT,33,14,"num_landmarks=15000,eta=0.5,n_join=5",empty,0.001,0,,,
+extreme_warehouse,dRRT,33,14,,timeout,299.872,,,,killed after 300.0s
+extreme_warehouse,dRRT_star,33,14,"num_expands=3000,num_landmarks=15000,k_nn=15,random_sample_counter=10",crash,,,,,"IndexError: Cannot choose from an empty sequence Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^"
+extreme_warehouse,StaggeredGrid,33,14,,timeout,299.999,,,,killed after 300.0s
+extreme_warehouse,ExactSingle,33,14,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+warehouse_rooms,Staged,53,33,"num_samples=120,k_nearest=8",ok,134.685,53,163,True,
+warehouse_rooms,PRM,53,33,"num_landmarks=15000,k_nn=15",empty,0.0,0,,,
+warehouse_rooms,RRT,53,33,,timeout,299.997,,,,killed after 300.0s
+warehouse_rooms,BiRRT,53,33,"num_landmarks=15000,eta=0.5,n_join=5",empty,0.001,0,,,
+warehouse_rooms,dRRT,53,33,,timeout,300.011,,,,killed after 300.0s
+warehouse_rooms,dRRT_star,53,33,"num_expands=3000,num_landmarks=15000,k_nn=15,random_sample_counter=10",crash,,,,,"IndexError: Cannot choose from an empty sequence Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^"
+warehouse_rooms,StaggeredGrid,53,33,,timeout,299.999,,,,killed after 300.0s
+warehouse_rooms,ExactSingle,53,33,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+new_warhouse,Staged,63,32,"num_samples=120,k_nearest=8",ok,144.272,63,174,True,
+new_warhouse,PRM,63,32,"num_landmarks=15000,k_nn=15",empty,0.0,0,,,
+new_warhouse,RRT,63,32,,timeout,300.031,,,,killed after 300.0s
+new_warhouse,BiRRT,63,32,"num_landmarks=15000,eta=0.5,n_join=5",empty,0.001,0,,,
+new_warhouse,dRRT,63,32,,timeout,300.003,,,,killed after 300.0s
+new_warhouse,dRRT_star,63,32,"num_expands=3000,num_landmarks=15000,k_nn=15,random_sample_counter=10",crash,,,,,"IndexError: Cannot choose from an empty sequence Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^"
+new_warhouse,StaggeredGrid,63,32,,timeout,300.002,,,,killed after 300.0s
+new_warhouse,ExactSingle,63,32,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "
+unsolvable_trap,Staged,2,4,"num_samples=50,k_nearest=8",empty,0.101,0,,,
+unsolvable_trap,PRM,2,4,"num_landmarks=200,k_nn=15",empty,0.0,0,,,
+unsolvable_trap,RRT,2,4,"num_landmarks=400,eta=0.5",empty,0.0,0,,,
+unsolvable_trap,BiRRT,2,4,"num_landmarks=400,eta=0.5,n_join=5",empty,0.0,0,,,
+unsolvable_trap,dRRT,2,4,"num_landmarks=200,k_nn=15,prm_num_landmarks=200",empty,0.087,0,,,
+unsolvable_trap,dRRT_star,2,4,"num_expands=400,num_landmarks=200,k_nn=15,random_sample_counter=10",crash,,,,,"IndexError: Cannot choose from an empty sequence Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^"
+unsolvable_trap,StaggeredGrid,2,4,,timeout,300.068,,,,killed after 300.0s
+unsolvable_trap,ExactSingle,2,4,eps=0.1,crash,,,,,"Exception: Unsupported number of robots Traceback (most recent call last):   File ""/Users/alonkaplan/Library/Mobile Documents/com~apple~CloudDocs/Documents/University/M.Sc/Courses/Robotics/Final_Project/new_PRM/compare_solvers.py"", line 260, in _child     pc = solver.solve()          ^^^^^^^^^^^^^^ "

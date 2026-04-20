@@ -62,6 +62,30 @@ FREE = 0
 BLOCKED = 1
 
 
+def _tree_overlay(arrs, traits) -> Arrangement_2:
+    """Balanced pairwise merge of a list of arrangements.
+
+    The naive sequential fold ``((a0 ⊕ a1) ⊕ a2) ⊕ …`` is a left-deep
+    reduction whose accumulator grows after every step; each overlay's
+    cost is roughly proportional to the total edge count of its two
+    operands, so the total work is quadratic in the final edge count.
+
+    A balanced pairwise merge keeps operands of comparable size and
+    reduces depth from ``O(n)`` to ``O(log n)`` — for warehouse-scale
+    scenes with dozens of obstacles this is a real speedup. The caller
+    guarantees ``len(arrs) >= 1``.
+    """
+    while len(arrs) > 1:
+        merged = [
+            Aos2.overlay(arrs[i], arrs[i + 1], traits)
+            for i in range(0, len(arrs) - 1, 2)
+        ]
+        if len(arrs) % 2 == 1:
+            merged.append(arrs[-1])
+        arrs = merged
+    return arrs[0]
+
+
 def construct_free_space(
     scene: Scene,
     robot_radius: float,
@@ -103,14 +127,15 @@ def construct_free_space(
 
         arrangements.append(arr)
 
-    # Overlay all per-obstacle arrangements
-    initial = Arrangement_2()
-    initial.unbounded_face().set_data(FREE)
-    arrangements.insert(0, initial)
-    arr = initial
-    for i in range(len(arrangements) - 1):
-        arr = Aos2.overlay(arrangements[i], arrangements[i + 1], traits)
-        arrangements[i + 1] = arr
+    # Overlay all per-obstacle arrangements via a balanced pairwise
+    # merge. Handles the zero-obstacle case by seeding a single FREE
+    # arrangement so the downstream bounding-box overlay has something
+    # to work with.
+    if not arrangements:
+        empty = Arrangement_2()
+        empty.unbounded_face().set_data(FREE)
+        arrangements.append(empty)
+    arr = _tree_overlay(arrangements, traits)
 
     # Bounding-box arrangement: inside == FREE, unbounded == BLOCKED
     if bounding_box is None:

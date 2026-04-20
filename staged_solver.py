@@ -76,7 +76,7 @@ import os
 import random
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
 
@@ -102,9 +102,9 @@ from visualize_cells import draw_cells
 class RealisationFailure:
     """Why a particular (cell, timestep) could not be realised.
 
-    Surfaced by ``_realise_timestep`` and propagated by ``_realise_paths``
-    so ``_solve`` can run Level B retry (lower the offending cell's
-    density and re-run MCF).
+    Surfaced by ``_realise_timestep`` (as the payload of a raised
+    :class:`RealisationError`) and caught by ``_solve`` so Level B retry
+    can lower the offending cell's density and re-run MCF.
     """
 
     cell_id: int
@@ -112,6 +112,22 @@ class RealisationFailure:
     transit_robots: List[int]
     holders: List[int]
     reason: str  # from AdhocResult.reason
+
+
+class RealisationError(Exception):
+    """Raised when a (cell, timestep) ad-hoc PRM cannot be realised.
+
+    Wraps a :class:`RealisationFailure` describing which cell/timestep
+    failed and why. Caught by ``StagedSolver._solve`` to drive the
+    Level B density-reduction retry loop.
+    """
+
+    def __init__(self, failure: "RealisationFailure"):
+        super().__init__(
+            f"realisation failed at cell={failure.cell_id}, "
+            f"t={failure.timestep}, reason={failure.reason}"
+        )
+        self.failure = failure
 
 
 def _point_in_partition(partition: Partition, x: float, y: float) -> bool:
@@ -228,7 +244,7 @@ class StagedSolver(Solver):
         scene = self.scene
         robots = scene.robots
         num_robots = len(robots)
-        robot_radius = robots[0].radius.to_double()
+        robot_radius = robots[0].radius.to_double() # We assume all robots are of the same radius.
         verbose = getattr(self, "verbose", False)
         writer = getattr(self, "writer", None)
         # Fresh cache per solve — stale entries across solves would
@@ -356,13 +372,13 @@ class StagedSolver(Solver):
                 return PathCollection()
 
             log("Steps 7-8: realising geometric paths...")
-            result = self._realise_paths(
-                mcf_sol, hlg, partitions, robots, robot_radius, log,
-            )
-            if isinstance(result, PathCollection):
-                return result
+            try:
+                return self._realise_paths(
+                    mcf_sol, hlg, partitions, robots, robot_radius, log,
+                )
+            except RealisationError as exc:
+                failure = exc.failure
 
-            failure = result
             part = partitions[failure.cell_id]
             if part.density <= 1:
                 log(
@@ -404,7 +420,7 @@ class StagedSolver(Solver):
         robots,
         robot_radius: float,
         log,
-    ) -> Union[PathCollection, RealisationFailure]:
+    ) -> PathCollection:
         """Convert MCF node sequences into geometric discopygal paths.
 
         For each timestep, every cell with ≥ 1 active robot gets a fresh
@@ -412,9 +428,8 @@ class StagedSolver(Solver):
         Transit robots contribute explicit entry/exit configurations
         (precomputed per-cell port insets from the HLG); holders are
         pinned at their actual current positions. On ad-hoc PRM failure
-        the method propagates a :class:`RealisationFailure` up to
-        ``_solve`` so the outer retry loop can lower the offending
-        cell's density and try again.
+        a :class:`RealisationError` is raised — ``_solve`` catches it
+        and runs the Level B retry (lower offending cell's density).
         """
         num_robots = len(robots)
         T = len(mcf_sol[0])
@@ -439,13 +454,10 @@ class StagedSolver(Solver):
         seed_base = self.prm_seed if self.prm_seed is not None else 0
 
         for t in range(T - 1):
-            timestep_result = self._realise_timestep(
+            timestep_segments = self._realise_timestep(
                 t, mcf_sol, hlg, partitions, current_pos, robot_radius,
                 seed_base, log,
             )
-            if isinstance(timestep_result, RealisationFailure):
-                return timestep_result
-            timestep_segments = timestep_result
 
             # ---- Pad segments to a common length for this timestep ----
             max_seg = max(
@@ -518,12 +530,12 @@ class StagedSolver(Solver):
         robot_radius: float,
         seed_base: int,
         log,
-    ) -> Union[Dict[int, List[Tuple[float, float]]], RealisationFailure]:
+    ) -> Dict[int, List[Tuple[float, float]]]:
         """Plan one MCF timestep.
 
-        Returns per-robot segments on success, or a ``RealisationFailure``
-        describing the cell / timestep / reason on failure. The outer
-        ``_solve`` retry loop uses the failure to target a density reduction.
+        Returns per-robot segments on success. On failure raises
+        :class:`RealisationError` with a payload describing the cell /
+        timestep / reason; ``_solve`` catches it and drives Level B retry.
         """
         num_robots = len(current_pos)
 
@@ -568,11 +580,18 @@ class StagedSolver(Solver):
                 entry = _node_position_in_cell(hlg, cell_id, src)
                 ex = _node_position_in_cell(hlg, cell_id, dst)
                 if entry is None or ex is None:
+                    transit_robots = [rr for rr, _, _ in transitions]
                     log(
                         f"  ad-hoc PRM: missing node position at t={t}, "
                         f"cell={cell_id}"
                     )
-                    return None
+                    raise RealisationError(RealisationFailure(
+                        cell_id=cell_id,
+                        timestep=t,
+                        transit_robots=transit_robots,
+                        holders=list(holders_here),
+                        reason="missing_node_position",
+                    ))
                 transit_entries.append(entry)
                 transit_exits.append(ex)
 
@@ -591,13 +610,13 @@ class StagedSolver(Solver):
                     f"transits={transit_robots}, holders={holders_here}, "
                     f"reason={reason}"
                 )
-                return RealisationFailure(
+                raise RealisationError(RealisationFailure(
                     cell_id=cell_id,
                     timestep=t,
                     transit_robots=transit_robots,
                     holders=list(holders_here),
                     reason=reason or "unknown",
-                )
+                ))
 
             n_transit = len(transitions)
             for slot, (r, _src, _dst) in enumerate(transitions):

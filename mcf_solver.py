@@ -1,9 +1,5 @@
 """Multi-commodity flow solver on the high-level cell graph.
 
-Step 6 of ``plan.tex``. Given a :class:`HighLevelGraph` from step 5 and
-a time horizon ``T``, route every robot from its start node to its goal
-node subject to per-cell capacity constraints.
-
 Strategy
 --------
 Sequential A* on a time-expanded graph with a reservation table. Robots
@@ -40,9 +36,8 @@ def solve_mcf(
 ) -> Optional[MCFSolution]:
     """Route every robot on the high-level graph. See module docstring."""
     G = hlg.graph
-    densities = _cell_densities(hlg)
+    capacity_by_cell = _get_capacity_by_cell(hlg)
     node_to_cells = _build_node_to_cells(hlg)
-    node_equiv = _build_node_equivalence(hlg)
 
     # Priority order: plan longest start→goal path first.
     priorities: List[Tuple[int, int]] = []
@@ -71,7 +66,7 @@ def solve_mcf(
 
         path = _astar_time_expanded(
             G, start_node, goal_node, time_horizon,
-            reservation, node_to_cells, densities, hlg, node_equiv,
+            reservation, node_to_cells, capacity_by_cell, hlg,
         )
         if path is None:
             if verbose:
@@ -107,32 +102,12 @@ def _build_node_to_cells(hlg: HighLevelGraph) -> Dict[str, List[int]]:
     return mapping
 
 
-def _cell_densities(hlg: HighLevelGraph) -> Dict[int, int]:
+def _get_capacity_by_cell(hlg: HighLevelGraph) -> Dict[int, int]:
     """Cell index → density. Read from graph edge attributes."""
-    densities: Dict[int, int] = {}
+    capacity_by_cell: Dict[int, int] = {}
     for _, _, data in hlg.graph.edges(data=True):
-        densities[data["cell_id"]] = data["capacity"]
-    return densities
-
-
-def _build_node_equivalence(
-        hlg: HighLevelGraph,
-) -> Dict[str, List[str]]:
-    """Group nodes by geometric position.
-
-    Two distinct HLG nodes at the same coordinate (e.g. ``start_i`` and
-    ``goal_j`` when two robots swap endpoints) are geometrically one
-    location, so vertex/swap conflict checks must treat them as
-    interchangeable.
-    """
-    pos_to_nodes: Dict[Tuple[float, float], List[str]] = {}
-    for n, pos in hlg.node_positions.items():
-        key = (round(pos[0], 6), round(pos[1], 6))
-        pos_to_nodes.setdefault(key, []).append(n)
-    return {
-        n: pos_to_nodes[(round(pos[0], 6), round(pos[1], 6))]
-        for n, pos in hlg.node_positions.items()
-    }
+        capacity_by_cell[data["cell_id"]] = data["capacity"]
+    return capacity_by_cell
 
 
 def _capacity_ok(
@@ -163,21 +138,22 @@ def _swap_conflict(
         to_node: str,
         time: int,
         reservation: Dict[str, Dict[int, Set[int]]],
-        node_equiv: Dict[str, List[str]],
+        hlg: HighLevelGraph,
 ) -> bool:
     """True iff moving ``from_node → to_node`` at ``time`` collides with a
     robot moving the opposite direction on the same edge.
 
-    Uses position equivalence so geometric swaps are caught even when
+    Uses ``hlg.node_equivalence`` so geometric swaps are caught even when
     the two nodes are technically different (e.g. ``start_i`` == ``goal_j``).
     """
+    equiv = hlg.node_equivalence
     robots_at_to = set()
-    for n in node_equiv.get(to_node, [to_node]):
+    for n in equiv.get(to_node, [to_node]):
         robots_at_to |= reservation.get(n, {}).get(time, set())
     if not robots_at_to:
         return False
     robots_at_from_next = set()
-    for n in node_equiv.get(from_node, [from_node]):
+    for n in equiv.get(from_node, [from_node]):
         robots_at_from_next |= reservation.get(n, {}).get(time + 1, set())
     return bool(robots_at_to & robots_at_from_next)
 
@@ -191,7 +167,6 @@ def _astar_time_expanded(
         node_to_cells: Dict[str, List[int]],
         densities: Dict[int, int],
         hlg: HighLevelGraph,
-        node_equiv: Dict[str, List[str]],
 ) -> Optional[List[str]]:
     """A* on ``(node, time)`` with vertex/swap conflicts and capacity.
 
@@ -252,12 +227,12 @@ def _astar_time_expanded(
             # Vertex conflict (position-equivalent nodes count).
             if any(
                     reservation.get(en, {}).get(next_time, set())
-                    for en in node_equiv.get(next_node, [next_node])
+                    for en in hlg.node_equivalence.get(next_node, [next_node])
             ):
                 continue
 
             if next_node != node and _swap_conflict(
-                    node, next_node, time, reservation, node_equiv,
+                    node, next_node, time, reservation, hlg,
             ):
                 continue
 

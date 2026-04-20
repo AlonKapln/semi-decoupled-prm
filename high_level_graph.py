@@ -124,6 +124,11 @@ class HighLevelGraph:
         Robot index → cell index containing the robot's start.
     goal_cells : dict[int, int]
         Robot index → cell index containing the robot's goal.
+    node_equivalence : dict[str, list[str]]
+        Each node → every node at the same rounded position (including
+        itself). Two distinct HLG nodes can share a coordinate (e.g.
+        ``start_i`` and ``goal_j`` when two robots swap endpoints);
+        MCF conflict checks must treat them as the same physical point.
     """
 
     graph: nx.Graph
@@ -132,6 +137,7 @@ class HighLevelGraph:
     cell_incident_nodes: Dict[int, List[str]]
     start_cells: Dict[int, int]
     goal_cells: Dict[int, int]
+    node_equivalence: Dict[str, List[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +587,19 @@ def build_high_level_graph(
                     cost=math.hypot(ax - bx, ay - by),
                 )
 
+    # ---- Node equivalence: group nodes sharing a (rounded) position ----
+    # Used by MCF conflict checks: ``start_i`` and ``goal_j`` can be the
+    # same physical point when two robots swap endpoints, and the
+    # reservation table must treat them as one location.
+    pos_to_nodes: Dict[Tuple[float, float], List[str]] = {}
+    for n, pos in node_positions.items():
+        key = (round(pos[0], 6), round(pos[1], 6))
+        pos_to_nodes.setdefault(key, []).append(n)
+    node_equivalence: Dict[str, List[str]] = {
+        n: pos_to_nodes[(round(pos[0], 6), round(pos[1], 6))]
+        for n, pos in node_positions.items()
+    }
+
     return HighLevelGraph(
         graph=G,
         node_positions=node_positions,
@@ -588,6 +607,7 @@ def build_high_level_graph(
         cell_incident_nodes=cell_incident,
         start_cells=start_cells,
         goal_cells=goal_cells,
+        node_equivalence=node_equivalence,
     )
 
 
