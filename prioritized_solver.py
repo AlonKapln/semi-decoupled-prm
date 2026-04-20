@@ -1,19 +1,20 @@
-"""Multi-commodity flow solver on the high-level cell graph.
+"""Prioritized space-time A* (cooperative A*) on the high-level cell graph.
 
 Strategy
 --------
-Sequential A* on a time-expanded graph with a reservation table. Robots
-are planned one at a time in decreasing order of their start→goal graph
-distance (longest path first) so scarce corridor capacity goes to the
-robots that need it most. Each planned robot adds its time-indexed
-occupancy to the reservation table; subsequent A* searches reject any
-``(node, time)`` state that would violate vertex/swap conflicts or a
-per-cell capacity bound.
+Prioritized planning (Erdmann & Lozano-Pérez, 1987) with per-robot A*
+on a time-expanded graph and a shared reservation table — i.e. Silver's
+Cooperative A* (2005). Robots are planned one at a time in decreasing
+order of their start→goal graph distance (longest path first) so scarce
+corridor capacity goes to the robots that need it most. Each planned
+robot adds its time-indexed occupancy to the reservation table;
+subsequent A* searches reject any ``(node, time)`` state that would
+violate vertex/swap conflicts or a per-cell capacity bound.
 
 Output
 ------
-``MCFSolution = Dict[int, List[str]]`` mapping each robot index to its
-time-indexed node sequence ``[node_at_t0, …, node_at_T]``. Returns
+``RoutingSolution = Dict[int, List[str]]`` mapping each robot index to
+its time-indexed node sequence ``[node_at_t0, …, node_at_T]``. Returns
 ``None`` if any robot is unroutable.
 """
 
@@ -25,15 +26,15 @@ import networkx as nx
 from high_level_graph import HighLevelGraph
 
 # Per-robot time-indexed node sequence.
-MCFSolution = Dict[int, List[str]]
+RoutingSolution = Dict[int, List[str]]
 
 
-def solve_mcf(
+def solve_prioritized(
         hlg: HighLevelGraph,
         num_robots: int,
         time_horizon: int,
         verbose: bool = False,
-) -> Optional[MCFSolution]:
+) -> Optional[RoutingSolution]:
     """Route every robot on the high-level graph. See module docstring."""
     G = hlg.graph
     capacity_by_cell = _get_capacity_by_cell(hlg)
@@ -51,10 +52,10 @@ def solve_mcf(
     robot_order = [r for _, r in priorities]
 
     if verbose:
-        print(f"MCF priority order: {robot_order}")
+        print(f"Prioritized planner: order = {robot_order}")
 
     reservation: Dict[str, Dict[int, Set[int]]] = {}
-    solution: MCFSolution = {}
+    solution: RoutingSolution = {}
 
     for r in robot_order:
         start_node = f"start_{r}"

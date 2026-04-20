@@ -1,7 +1,7 @@
 """Ad-hoc per-(cell, timestep) joint k-robot PRM.
 
 Step 4 / step 7 of ``plan.tex``. At path realisation time the staged
-solver builds one small joint roadmap per cell per MCF timestep via
+solver builds one small joint roadmap per cell per router timestep via
 :func:`build_adhoc_roadmap`. A *joint* configuration places up to ``k``
 robots simultaneously in the cell; the PRM finds a collision-free joint
 steer from an explicit entry configuration to an explicit exit

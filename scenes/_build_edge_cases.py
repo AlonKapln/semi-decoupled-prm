@@ -199,7 +199,7 @@ def crossing_4():
 def open_16():
     """16 robots in an open 20x20 area doing antipodal swaps.
 
-    Heavy multi-robot stress with no obstacles; exercises MCF routing.
+    Heavy multi-robot stress with no obstacles; exercises the router.
     """
     r = 0.25
     n = 16

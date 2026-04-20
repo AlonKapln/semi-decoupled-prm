@@ -18,7 +18,7 @@ Usage
 By default the figure is saved under ``visualizations/`` in the repo
 (filename derived from the scene basename). Pass ``--show`` to open an
 interactive window instead. The script is read-only — it does not run
-MCF or the ad-hoc PRM, so it is fast and safe to re-run while tuning
+the router or the ad-hoc PRM, so it is fast and safe to re-run while tuning
 a scene.
 
 Library use

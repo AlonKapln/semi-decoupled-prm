@@ -22,7 +22,7 @@ Each shared edge produces zero or more port nodes along subsegments
 where a ``_INSET_DEPTH_R·r`` inward inset is valid on both sides **and**
 survives a ``2r`` straight-line escape check (so ports never sit in
 dead-end pockets). Long edges get multiple ports spaced by
-``_MIN_PORT_SPACING_R·r`` so MCF sees parallel capacity channels
+``_MIN_PORT_SPACING_R·r`` so the router sees parallel capacity channels
 instead of bottlenecking the wall on a single transit slot. Ports are
 kept ``_PORT_EDGE_END_MARGIN_R·r`` away from edge endpoints, and
 per-cell proximity tracking rejects any candidate whose inset lands
@@ -55,7 +55,7 @@ _COORD_PRECISION = 10
 # Minimum along-edge spacing (in units of robot radius) between adjacent
 # parallel ports on the same shared edge. Below ~8r the ad-hoc joint PRM
 # struggles to find intermediate configs for two transit robots near
-# each other; above ~16r MCF under-utilises long walls. 10r is the sweet
+# each other; above ~16r the router under-utilises long walls. 10r is the sweet
 # spot.
 _MIN_PORT_SPACING_R = 10.0
 
@@ -128,7 +128,7 @@ class HighLevelGraph:
         Each node → every node at the same rounded position (including
         itself). Two distinct HLG nodes can share a coordinate (e.g.
         ``start_i`` and ``goal_j`` when two robots swap endpoints);
-        MCF conflict checks must treat them as the same physical point.
+        router conflict checks must treat them as the same physical point.
     """
 
     graph: nx.Graph
@@ -391,7 +391,7 @@ def _validated_port_positions(
 
     Long edges — common in grid-decomposed scenes where two large open
     cells share a wall many times the robot radius — benefit from
-    multiple parallel ports: MCF sees each port as an independent
+    multiple parallel ports: the router sees each port as an independent
     transit slot, so per-timestep flow across that wall is no longer
     bottlenecked by a single entry point.
 
@@ -473,7 +473,7 @@ def build_high_level_graph(
         robot_radius: float,
         checker=None,
 ) -> HighLevelGraph:
-    """Build the high-level cell graph for MCF routing.
+    """Build the high-level cell graph for routing.
 
     Args
     ----
@@ -588,7 +588,7 @@ def build_high_level_graph(
                 )
 
     # ---- Node equivalence: group nodes sharing a (rounded) position ----
-    # Used by MCF conflict checks: ``start_i`` and ``goal_j`` can be the
+    # Used by router conflict checks: ``start_i`` and ``goal_j`` can be the
     # same physical point when two robots swap endpoints, and the
     # reservation table must treat them as one location.
     pos_to_nodes: Dict[Tuple[float, float], List[str]] = {}

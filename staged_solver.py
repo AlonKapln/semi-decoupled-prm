@@ -11,7 +11,8 @@ Steps 7–8 of ``plan.tex``.  Orchestrates the full pipeline:
    with boundary ports, robot starts/goals; also precomputes a
    per-cell inset for every port so path realisation can use it
    directly (step 5).
-4. ``mcf_solver.solve_mcf`` — multi-commodity flow routing (step 6).
+4. ``prioritized_solver.solve_prioritized`` — prioritized space-time
+   A* routing on the HLG (step 6).
 5. **Path realisation** — for each timestep, build a fresh ad-hoc
    joint PRM per active cell via ``cell_joint_prm.build_adhoc_roadmap``
    and extract a joint path entry→exit.
@@ -26,7 +27,7 @@ entries/exits).
 
 Path realisation (step 7) — ad-hoc per-(cell, timestep) joint PRM
 ------------------------------------------------------------------
-The MCF gives each robot a time-indexed sequence of high-level nodes::
+The router gives each robot a time-indexed sequence of high-level nodes::
 
     robot 0 : [start_0, port_2, port_5, goal_0, goal_0, ...]
 
@@ -71,6 +72,7 @@ numbers of waypoints are right-padded with a repeat of their final
 position (a hold), so every robot's ``Path`` has the same length.
 """
 
+import hashlib
 import math
 import os
 import random
@@ -92,8 +94,8 @@ from high_level_graph import (
     build_high_level_graph,
     estimate_time_horizon,
 )
-from mcf_solver import MCFSolution, solve_mcf
 from partition import Partition
+from prioritized_solver import RoutingSolution, solve_prioritized
 from scene_partitioning import partition_free_space_grid
 from visualize_cells import draw_cells
 
@@ -104,7 +106,7 @@ class RealisationFailure:
 
     Surfaced by ``_realise_timestep`` (as the payload of a raised
     :class:`RealisationError`) and caught by ``_solve`` so Level B retry
-    can lower the offending cell's density and re-run MCF.
+    can lower the offending cell's density and re-run the router.
     """
 
     cell_id: int
@@ -128,6 +130,39 @@ class RealisationError(Exception):
             f"t={failure.timestep}, reason={failure.reason}"
         )
         self.failure = failure
+
+
+def _infer_scene_stem(scene) -> str:
+    """Stable filename stem for visualisation artifacts.
+
+    Priority:
+    1. ``scene._source_path`` (set by test suite / compare_solvers /
+       ``visualize_cells`` CLI) → basename without extension.
+    2. Short deterministic hash of the scene's robots + obstacles so
+       different scenes produced by the same harness (e.g. solver_viewer
+       loading different files without stashing the path) don't all
+       overwrite a single ``scene_d*.png``.
+    """
+    src = getattr(scene, "_source_path", None)
+    if src:
+        return os.path.splitext(os.path.basename(src))[0]
+    parts: List[str] = []
+    for r in scene.robots:
+        parts.append(
+            f"r{r.radius.to_double():.4f}:"
+            f"{r.start.x().to_double():.4f},{r.start.y().to_double():.4f}"
+            f"->{r.end.x().to_double():.4f},{r.end.y().to_double():.4f}"
+        )
+    for o in scene.obstacles:
+        poly = getattr(o, "poly", None)
+        if poly is None:
+            continue
+        coords = [
+            (v.x().to_double(), v.y().to_double()) for v in poly.vertices()
+        ]
+        parts.append("o:" + ";".join(f"{x:.4f},{y:.4f}" for x, y in coords))
+    digest = hashlib.sha1("|".join(parts).encode()).hexdigest()[:8]
+    return f"scene_{digest}"
 
 
 def _point_in_partition(partition: Partition, x: float, y: float) -> bool:
@@ -168,14 +203,14 @@ class StagedSolver(Solver):
     k_nearest : int
         PRM neighbour connections per sample.
     time_horizon : int or None
-        MCF time horizon.  ``None`` = auto-compute.
+        Router time horizon.  ``None`` = auto-compute.
     prm_seed : int or None
         RNG seed for reproducible PRM sampling.
     max_cell_density : int
         Upper bound for per-cell density used by the grid refinement. Lower
         values split large open regions into smaller cells (better joint-PRM
-        behaviour, more expensive HLG/MCF); higher values leave cells as
-        large as the free-space topology allows.
+        behaviour, more expensive HLG / router); higher values leave cells
+        as large as the free-space topology allows.
     """
 
     def __init__(
@@ -230,7 +265,7 @@ class StagedSolver(Solver):
         return {
             "num_samples": ("PRM samples per cell:", 50, int),
             "k_nearest": ("PRM k-nearest neighbours:", 8, int),
-            "time_horizon": ("MCF time horizon (0=auto):", 0, int),
+            "time_horizon": ("Router time horizon (0=auto):", 0, int),
             "prm_seed": ("PRM RNG seed (0=random):", 0, int),
             "max_cell_density": ("Max cell density (grid refinement):", 100, int),
             **super().get_arguments(),
@@ -328,15 +363,15 @@ class StagedSolver(Solver):
                 partition.update_density(new_density)
 
         # --- Save a cell decomposition snapshot ---
-        # Every solve drops a PNG named ``{scene}_d{density}.png`` into
+        # Every solve drops a PNG named ``{stem}_d{density}.png`` into
         # visualizations/ so the user can eyeball the partition + port
-        # layout that MCF is about to plan on. The scene stem is read
-        # from ``scene._source_path`` if the caller set it (test suite /
-        # CLI do); otherwise we fall back to ``"scene"``. Failures here
-        # (missing matplotlib, display issues) must never break solving.
+        # layout that the router is about to plan on. ``stem`` comes
+        # from ``_infer_scene_stem`` — source-path basename if set,
+        # otherwise a content hash so different scenes don't all
+        # collide under one filename. Failures here (missing matplotlib,
+        # display issues) must never break solving.
         try:
-            src = getattr(scene, "_source_path", None)
-            stem = os.path.splitext(os.path.basename(src))[0] if src else "scene"
+            stem = _infer_scene_stem(scene)
             save_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
                 "visualizations",
@@ -357,24 +392,26 @@ class StagedSolver(Solver):
         except Exception as exc:  # noqa: BLE001 — viz is best-effort
             log(f"  cell snapshot skipped: {exc}")
 
-        # --- Steps 6-8: MCF + path realisation with Level B retry ---
+        # --- Steps 6-8: routing + path realisation with Level B retry ---
         # P0.2 Level B: if path realisation fails for a specific cell, drop
         # that cell's density by 1, rebuild affected HLG edge capacities,
-        # and re-run MCF + realisation. Cap at ``max_retries`` attempts.
+        # and re-run the router + realisation. Cap at ``max_retries`` attempts.
         T = self.time_horizon or estimate_time_horizon(hlg)
         max_retries = 3
 
         for attempt in range(max_retries + 1):
-            log(f"Step 6: solving MCF (T={T}, attempt={attempt})...")
-            mcf_sol = solve_mcf(hlg, num_robots, T, verbose=verbose)
-            if mcf_sol is None:
-                log("  MCF found no solution")
+            log(f"Step 6: prioritized routing (T={T}, attempt={attempt})...")
+            routing_sol = solve_prioritized(
+                hlg, num_robots, T, verbose=verbose,
+            )
+            if routing_sol is None:
+                log("  Prioritized router found no solution")
                 return PathCollection()
 
             log("Steps 7-8: realising geometric paths...")
             try:
                 return self._realise_paths(
-                    mcf_sol, hlg, partitions, robots, robot_radius, log,
+                    routing_sol, hlg, partitions, robots, robot_radius, log,
                 )
             except RealisationError as exc:
                 failure = exc.failure
@@ -390,8 +427,8 @@ class StagedSolver(Solver):
                 return PathCollection()
             # Halve instead of decrement: cells that need to collapse
             # from e.g. density 8 to 1 would otherwise need 7 Level B
-            # attempts (each rerunning MCF). Halving converges in
-            # ⌈log2(d)⌉ retries.
+            # attempts (each rerunning the router). Halving converges
+            # in ⌈log2(d)⌉ retries.
             new_density = max(1, part.density // 2)
             log(
                 f"  Level B retry: cell {failure.cell_id} density "
@@ -400,7 +437,7 @@ class StagedSolver(Solver):
             )
             part.update_density(new_density)
             # Keep HLG edge capacities in sync with the cell density —
-            # MCF reads capacity from edge attributes.
+            # the router reads capacity from edge attributes.
             for u, v, data in hlg.graph.edges(data=True):
                 if data.get("cell_id") == failure.cell_id:
                     data["capacity"] = new_density
@@ -414,14 +451,14 @@ class StagedSolver(Solver):
 
     def _realise_paths(
         self,
-        mcf_sol: MCFSolution,
+        routing_sol: RoutingSolution,
         hlg: HighLevelGraph,
         partitions: List[Partition],
         robots,
         robot_radius: float,
         log,
     ) -> PathCollection:
-        """Convert MCF node sequences into geometric discopygal paths.
+        """Convert routing node sequences into geometric discopygal paths.
 
         For each timestep, every cell with ≥ 1 active robot gets a fresh
         ad-hoc joint PRM built via ``cell_joint_prm.build_adhoc_roadmap``.
@@ -432,7 +469,7 @@ class StagedSolver(Solver):
         and runs the Level B retry (lower offending cell's density).
         """
         num_robots = len(robots)
-        T = len(mcf_sol[0])
+        T = len(routing_sol[0])
 
         # Current geometric position per robot. Updated at end of every
         # timestep from the robot's segment exit. At a cell boundary
@@ -455,7 +492,7 @@ class StagedSolver(Solver):
 
         for t in range(T - 1):
             timestep_segments = self._realise_timestep(
-                t, mcf_sol, hlg, partitions, current_pos, robot_radius,
+                t, routing_sol, hlg, partitions, current_pos, robot_radius,
                 seed_base, log,
             )
 
@@ -523,7 +560,7 @@ class StagedSolver(Solver):
     def _realise_timestep(
         self,
         t: int,
-        mcf_sol: MCFSolution,
+        routing_sol: RoutingSolution,
         hlg: HighLevelGraph,
         partitions: List[Partition],
         current_pos: Dict[int, Tuple[float, float]],
@@ -531,7 +568,7 @@ class StagedSolver(Solver):
         seed_base: int,
         log,
     ) -> Dict[int, List[Tuple[float, float]]]:
-        """Plan one MCF timestep.
+        """Plan one router timestep.
 
         Returns per-robot segments on success. On failure raises
         :class:`RealisationError` with a payload describing the cell /
@@ -547,8 +584,8 @@ class StagedSolver(Solver):
         holding: List[int] = []
 
         for r in range(num_robots):
-            src = mcf_sol[r][t]
-            dst = mcf_sol[r][t + 1]
+            src = routing_sol[r][t]
+            dst = routing_sol[r][t + 1]
             if src == dst:
                 holding.append(r)
                 continue

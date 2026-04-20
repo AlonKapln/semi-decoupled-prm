@@ -147,7 +147,7 @@ def partition_free_space_grid(
     max_cell_density :
         Upper bound for per-cell density. Lower values split large open
         regions into smaller cells (better joint-PRM performance, slower
-        HLG/MCF). Higher values leave cells as large as the free-space
+        HLG / router). Higher values leave cells as large as the free-space
         topology allows.
     """
     arrangement = construct_free_space(scene, robot_radius=robot_radius, eps=eps)

@@ -4,7 +4,7 @@ A ``Partition`` wraps a CGAL polygon (the cell shape) and exposes two
 scalars used later in the pipeline:
 
 - ``density`` — maximum number of disc robots that may simultaneously
-  occupy the cell (MCF edge capacity).
+  occupy the cell (HLG edge capacity).
 - ``complexity`` — shape-difficulty factor used by the staged solver to
   scale the joint-PRM sample count for this cell.
 

@@ -236,6 +236,7 @@ def _child(
         from discopygal.solvers_infra import Scene
         from discopygal.solvers_infra.verify_paths import verify_paths
         scene = Scene.from_file(scene_path)
+        scene._source_path = scene_path
         factory = SOLVERS[solver_name]
         solver, params = factory(n_robots)
         result["params"] = params
