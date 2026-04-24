@@ -1,32 +1,10 @@
-"""Visualize the cell decomposition and high-level graph of a scene.
+"""Draw cells, ports, and robots for a scene.
 
-Loads a Discopygal scene JSON, runs the same pipeline the staged solver
-uses (free-space build → partition → high-level graph), and draws:
+CLI: python visualize_cells.py scenes/tight_rooms.json [--density N]
+     saves to visualizations/<scene>_d<density>.png by default.
 
-* Obstacles (dark gray, filled).
-* Cells (light-blue fill, thin borders, numeric id at centroid).
-* Ports (small blue dots at the cell-side inset position, with a thin
-  line connecting the two insets of each port pair).
-* Robot starts (green circles) and goals (red squares).
-
-Usage
------
-    python visualize_cells.py scenes/tight_rooms.json
-    python visualize_cells.py scenes/tight_rooms.json --density 50
-    python visualize_cells.py scenes/tight_rooms.json --save out.png
-
-By default the figure is saved under ``visualizations/`` in the repo
-(filename derived from the scene basename). Pass ``--show`` to open an
-interactive window instead. The script is read-only — it does not run
-the router or the ad-hoc PRM, so it is fast and safe to re-run while tuning
-a scene.
-
-Library use
------------
-``draw_cells(scene, partitions, hlg, robot_radius, save_path=...)`` draws
-from already-built partitions + HLG — the staged solver calls this
-directly after building its high-level graph so every solve drops a
-snapshot into ``visualizations/``.
+Library: draw_cells(scene, partitions, hlg, robot_radius, save_path=...)
+is called by the staged solver after every decomposition build.
 """
 
 import argparse
@@ -34,21 +12,12 @@ import os
 import subprocess
 import sys
 
-# Force the non-interactive Agg backend *before* pyplot is imported.
-# Two reasons:
-# 1. Inside solver_viewer (Qt event loop) or any host that owns its own
-#    GUI, matplotlib's auto-picked Qt/Tk backend either hangs or silently
-#    fails when we create a figure from within the solve callback, which
-#    aborts the solve with no visible error. Agg is purely offscreen, so
-#    it cannot clash with a host event loop.
-# 2. draw_cells only ever calls fig.savefig() — it never needs a live
-#    window — so the interactive backends bring no benefit.
-# ``--show`` in the CLI still works: it saves to a PNG and opens it with
-# the platform viewer instead of popping a matplotlib window.
+# Force Agg before pyplot imports: Qt/Tk backends deadlock inside
+# solver_viewer's event loop. --show opens the saved PNG instead.
 import matplotlib
 matplotlib.use("Agg", force=True)
-import matplotlib.patches as mpatches  # noqa: E402  — after use()
-import matplotlib.pyplot as plt  # noqa: E402  — after use()
+import matplotlib.patches as mpatches  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.collections import PatchCollection  # noqa: E402
 
 from discopygal.solvers_infra import Scene
@@ -57,8 +26,6 @@ from high_level_graph import HighLevelGraph, build_high_level_graph
 from scene_partitioning import partition_free_space_grid
 
 
-# Default output directory, resolved relative to this file so it works
-# regardless of cwd (e.g., when solver_viewer invokes the solver).
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUTPUT_DIR = os.path.join(REPO_ROOT, "visualizations")
 
@@ -74,7 +41,6 @@ def _poly_xy(poly):
 
 
 def _obstacle_xy(obs):
-    # ObstaclePolygon exposes .poly (a Polygon_2) in discopygal
     poly = obs.poly
     return _poly_xy(poly)
 
@@ -84,7 +50,6 @@ def _centroid(xs, ys):
 
 
 def _bounds(scene):
-    """Scene bounding box from obstacles, robots, and goals."""
     xs, ys = [], []
     for o in scene.obstacles:
         ox, oy = _obstacle_xy(o)
@@ -128,11 +93,11 @@ def _draw_cells_layer(ax, partitions, show_cell_ids: bool) -> None:
 
 
 def _draw_ports_layer(ax, hlg: HighLevelGraph) -> None:
-    port_insets: dict = {}
+    port_points: dict = {}
     for ci, port_map in hlg.cell_boundary_ports.items():
         for port_id, (x, y) in port_map.items():
-            port_insets.setdefault(port_id, []).append((ci, x, y))
-    for entries in port_insets.values():
+            port_points.setdefault(port_id, []).append((ci, x, y))
+    for entries in port_points.values():
         if len(entries) >= 2:
             (_, x1, y1), (_, x2, y2) = entries[0], entries[1]
             ax.plot(
@@ -182,14 +147,11 @@ def draw_cells(
     show_cell_ids: bool = True,
     show_robots: bool = True,
     show_interactive: bool = False,
+    verbose: bool = False,
 ) -> str | None:
-    """Draw partitions + HLG + scene to a matplotlib figure.
-
-    Returns the output path if saved, else ``None``. If neither
-    ``save_path`` nor ``show_interactive`` is given, the figure is
-    saved to the default repo ``visualizations/`` directory with a
-    timestamped filename.
-    """
+    """Render the decomposition and save a PNG. Returns the saved path
+    (or None). With no save_path, writes a timestamped PNG under
+    visualizations/."""
     num_ports = sum(len(p) for p in hlg.cell_boundary_ports.values()) // 2
 
     fig, ax = plt.subplots(figsize=(12, 10))
@@ -197,7 +159,6 @@ def draw_cells(
 
     _draw_cells_layer(ax, partitions, show_cell_ids)
 
-    # Obstacles: dark fill, drawn on top of cells
     for o in scene.obstacles:
         ox, oy = _obstacle_xy(o)
         ax.fill(ox, oy, color="#222", alpha=0.9, zorder=3)
@@ -227,7 +188,7 @@ def draw_cells(
     if show_ports:
         legend_handles.append(plt.Line2D(
             [0], [0], marker="o", color="#1f77b4",
-            linestyle="-", markersize=4, label="port (inset)",
+            linestyle="-", markersize=4, label="port point",
         ))
     ax.legend(handles=legend_handles, loc="upper right", fontsize=8)
 
@@ -244,13 +205,11 @@ def draw_cells(
         if parent:
             os.makedirs(parent, exist_ok=True)
     fig.savefig(out, dpi=150)
-    print(f"saved to {out}")
+    if verbose:
+        print(f"saved to {out}")
     plt.close(fig)
 
-    # Under Agg we can't pop a live window; ``--show`` opens the PNG in
-    # the platform's default viewer instead. Best-effort — if the open
-    # command fails (headless CI, missing viewer) we just leave the
-    # saved PNG behind.
+    # Agg cannot pop a window; --show best-effort opens the PNG.
     if show_interactive:
         try:
             if sys.platform == "darwin":
@@ -259,7 +218,7 @@ def draw_cells(
                 subprocess.Popen(["xdg-open", out])
             elif sys.platform == "win32":
                 os.startfile(out)  # type: ignore[attr-defined]
-        except Exception as exc:  # noqa: BLE001 — best-effort
+        except Exception as exc:
             print(f"could not open viewer: {exc}")
 
     return out
@@ -274,7 +233,6 @@ def visualize(
     save_path: str | None = None,
     show_interactive: bool = False,
 ) -> None:
-    """CLI entry point — load the scene, build the pipeline, draw."""
     scene = Scene.from_file(scene_path)
     robots = scene.robots
     if not robots:
@@ -302,7 +260,6 @@ def visualize(
         f"{hlg.graph.number_of_edges()} hlg edges, {num_ports} ports"
     )
 
-    # Default CLI save path: visualizations/<scene>_d<density>.png
     if save_path is None and not show_interactive:
         stem = os.path.splitext(os.path.basename(scene_path))[0]
         os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
@@ -311,7 +268,7 @@ def visualize(
         )
 
     title = (
-        f"{os.path.basename(scene_path)} — density={density}, "
+        f"{os.path.basename(scene_path)} -- density={density}, "
         f"{len(partitions)} cells, {num_ports} ports, {len(robots)} robots"
     )
     draw_cells(
@@ -322,6 +279,7 @@ def visualize(
         show_cell_ids=show_cell_ids,
         show_robots=show_robots,
         show_interactive=show_interactive,
+        verbose=True,
     )
 
 

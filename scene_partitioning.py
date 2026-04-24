@@ -1,12 +1,5 @@
-"""Partition the Minkowski-inflated free space into small convex cells.
-
-Currently only a pure grid decomposition is supported via
-``partition_free_space_grid``. An earlier trapezoidal-decomposition pass
-(``_vertical_decompose`` + ``partition_free_space_vertical``) was removed:
-it produced narrow slivers along inflated-obstacle arcs that the joint
-PRM could not reliably separate, and it offered no solve-success benefit
-over the grid decomposition once ``max_cell_density`` was tuned.
-"""
+"""Partition the Minkowski-inflated free space with a regular grid
+overlay, emitting one Partition per free face."""
 
 import math
 from typing import List, Tuple
@@ -28,15 +21,11 @@ from free_space_builder import FREE, construct_free_space
 
 
 def _face_to_polygon(face) -> Pol2.Polygon_2:
-    """Walk the outer CCB of a free face and emit a CGAL ``Polygon_2``.
+    """Walk the outer CCB of a free face into a Polygon_2.
 
-    The vertices of an arrangement built from ``approximated_offset_2`` live
-    in CGAL's *extended* number type (each coordinate is ``a0 + a1·sqrt(γ)``)
-    so that circular arc intersections are exact. The trapezoidal cells we
-    care about have only straight edges, but their endpoints can still sit on
-    arc intersection points. We project to the rational part via ``a0()``;
-    the resulting cell is a strict subset of the true free face which is
-    safe (it never claims blocked area as free).
+    CGAL coordinates live in an extended type (a0 + a1 * sqrt(gamma));
+    projecting via a0() yields a rational subset of the true face.
+    Safe (never claims blocked area as free).
     """
     poly = Pol2.Polygon_2()
     for halfedge in face.outer_ccb():
@@ -52,18 +41,9 @@ def _refine_with_grid(
         robot_radius: float,
         max_cell_density: int,
 ) -> Arrangement_2:
-    """Add a regular grid of cuts to limit cell density.
-
-    Adds horizontal and vertical cut lines whose spacing is chosen so that
-    each resulting cell has area at most
-    ``max_cell_density * pi * (2r)^2`` — i.e. density <= max_cell_density.
-    Spacing is floored at ``4 * robot_radius`` so every cell is wide enough
-    for boundary-inset sampling (points kept at least ``r`` from all edges).
-
-    All cuts span the full bounding box. The overlay preserves face data
-    tags (free/blocked) via additive functor.
-    """
-    # Collect bounding box
+    """Overlay axis-aligned grid cuts so every resulting cell has area
+    at most max_cell_density * pi * (2r)^2. Spacing is floored at 4r so
+    r-margin sampling stays feasible."""
     x_vals = []
     y_vals = []
     for v in arr.vertices():
@@ -77,8 +57,6 @@ def _refine_with_grid(
     y_sorted = sorted(set(y_vals), key=lambda ft: ft.to_double())
     min_y, max_y = y_sorted[0], y_sorted[-1]
 
-    # Grid spacing: target area density, but at least 4r so cells are
-    # wide enough for r-inset sampling.
     grid_spacing = max(
         math.sqrt(max_cell_density * math.pi * (2.0 * robot_radius) ** 2),
         4.0 * robot_radius,
@@ -86,7 +64,6 @@ def _refine_with_grid(
 
     walls = []
 
-    # Horizontal grid lines
     dy = max_y.to_double() - min_y.to_double()
     n_h = int(dy / grid_spacing) + 1
     for i in range(1, n_h):
@@ -96,7 +73,6 @@ def _refine_with_grid(
                 Point_2(min_x, FT(yv)), Point_2(max_x, FT(yv)),
             )))
 
-    # Vertical grid lines
     dx = max_x.to_double() - min_x.to_double()
     n_v = int(dx / grid_spacing) + 1
     for i in range(1, n_v):
@@ -124,32 +100,11 @@ def partition_free_space_grid(
         eps: float = 1e-4,
         max_cell_density: int = 100,
 ) -> Tuple[List[Partition], Arrangement_2]:
-    """Partition free space with a regular grid.
-
-    1. ``construct_free_space`` builds an arrangement of inflated obstacles
-       clipped to the bounding box (faces tagged ``FREE`` / ``BLOCKED``).
-    2. ``_refine_with_grid`` overlays a regular grid of horizontal and
-       vertical cuts so that each resulting cell has area bounded by
-       ``max_cell_density`` disc-packing units. Grid spacing is floored at
-       ``4 * robot_radius`` so every cell is wide enough for boundary-inset
-       sampling.
-    3. Each free face is converted to a ``Pol2.Polygon_2`` and wrapped in a
-       ``Partition`` whose ``density`` is computed from area and radius.
-
-    Cells are **not guaranteed convex**: inflated-obstacle arcs carve curved
-    notches into cells that touch them. The downstream code
-    (``build_adhoc_roadmap``, ``high_level_graph``) handles non-convex
-    partitions via closed point-in-polygon tests plus a scene-level
-    collision checker for exact-arc validity.
-
-    Parameters
-    ----------
-    max_cell_density :
-        Upper bound for per-cell density. Lower values split large open
-        regions into smaller cells (better joint-PRM performance, slower
-        HLG / router). Higher values leave cells as large as the free-space
-        topology allows.
-    """
+    """Free-space grid partition: Minkowski-inflated arrangement overlaid
+    with an axis-aligned grid, one Partition per free face. Cells are
+    not guaranteed convex (arc notches along inflated obstacles); the
+    downstream pipeline handles this with point-in-polygon + the
+    scene-level collision checker."""
     arrangement = construct_free_space(scene, robot_radius=robot_radius, eps=eps)
     arrangement = _refine_with_grid(arrangement, robot_radius, max_cell_density)
 

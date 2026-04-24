@@ -1,36 +1,8 @@
-"""Benchmark the staged solver against discopygal's own solvers.
-
-For each (scene, solver) pair, runs the solver in a fresh subprocess
-with a wall-clock timeout (default 5 minutes), validates the resulting
-``PathCollection`` with ``verify_paths``, and writes one row to a CSV.
-
-Usage::
-
-    python3 compare_solvers.py                          # all scenes, 5 min cap
-    python3 compare_solvers.py --timeout 120            # 2 min cap
-    python3 compare_solvers.py --scenes swap_2 rotate_6 # subset
-    python3 compare_solvers.py --solvers Staged PRM     # subset
-    python3 compare_solvers.py --out my_results.csv
-
-CSV columns::
-
-    scene, solver, num_robots, num_obstacles, status, elapsed_sec,
-    num_paths, max_waypoints, verify_ok, notes
-
-``status`` is one of ``ok``, ``invalid`` (paths returned but
-verify_paths rejected), ``empty`` (no paths), ``timeout``, ``crash``.
-
-Each run goes through a spawn-context subprocess so the timeout is
-enforced by terminating the child, and one solver's crash can't take
-the whole benchmark down.
-"""
-
 import argparse
 import csv
 import json
 import multiprocessing as mp
 import os
-import sys
 import tempfile
 import time
 import traceback
@@ -38,51 +10,22 @@ from typing import Any, Callable, Dict, List, Optional
 
 SCENES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenes")
 
-
-# ---------------------------------------------------------------------------
-# Sample-count heuristic
-# ---------------------------------------------------------------------------
-# Sampling-based multi-robot planners work in R^(2n) configuration space,
-# where n is the robot count. Budgeting must grow super-linearly in n or
-# the roadmap stays starved on anything past a few robots. The heuristic
-# we use is
-#
-#     count(n) = min(cap, base · (1 + (n-1)²))
-#
-# which matches the user's "100 for 1, 200 for 2, 500 for 3" intuition,
-# keeps growing fast enough through ~6 robots, and then caps so the
-# warehouse-scale scenes don't blow out the 5-minute timeout during
-# roadmap construction alone.
-
 _SAMPLE_CAP = 15_000
 
 
 def _scale(n_robots: int, base: int, cap: int = _SAMPLE_CAP) -> int:
-    """``base · (1 + (n-1)²)`` capped at ``cap``."""
     n = max(1, n_robots)
     return int(min(cap, base * (1 + (n - 1) ** 2)))
 
 
-# ---------------------------------------------------------------------------
-# Solver factories
-# ---------------------------------------------------------------------------
-# Each factory takes the scene's robot count and returns
-# ``(solver_instance, params_description_string)``. The description
-# string is logged to the console so the chosen hyperparameters are
-# visible per run.
-
 def _make_staged(n_robots: int):
     from staged_solver import StagedSolver
-    # Staged's ``num_samples`` is per-(cell, timestep) joint PRM, so it
-    # scales with how many robots share a cell, not total n. A mild
-    # linear bump handles dense-rotation scenes without wasting work on
-    # sparse ones.
+    # num_samples is per-(cell, timestep), so it scales with cell-local n.
     ns = min(120, 30 + 10 * n_robots)
     params = f"num_samples={ns},k_nearest=8"
     return (
         StagedSolver(
-            num_samples=ns, k_nearest=8, prm_seed=42,
-            max_cell_density=100,
+            num_samples=ns, k_nearest=8, max_cell_density=100,
         ),
         params,
     )
@@ -97,8 +40,6 @@ def _make_prm(n_robots: int):
 
 def _make_rrt(n_robots: int):
     from discopygal.solvers.rrt import RRT
-    # RRT extends rather than builds a full roadmap, so it tolerates a
-    # larger landmark budget; use a bigger base than PRM.
     n_landmarks = _scale(n_robots, base=200)
     params = f"num_landmarks={n_landmarks},eta=0.5"
     return RRT(num_landmarks=n_landmarks, eta=0.5), params
@@ -113,8 +54,6 @@ def _make_birrt(n_robots: int):
 
 def _make_drrt(n_robots: int):
     from discopygal.solvers.rrt import dRRT
-    # Both the tensor-product PRM (prm_num_landmarks) and the outer dRRT
-    # roadmap (num_landmarks) need to grow with n.
     prm_l = _scale(n_robots, base=100)
     l = _scale(n_robots, base=100)
     params = f"num_landmarks={l},k_nn=15,prm_num_landmarks={prm_l}"
@@ -126,9 +65,7 @@ def _make_drrt(n_robots: int):
 
 def _make_drrt_star(n_robots: int):
     from discopygal.solvers.rrt import dRRT_star
-    # num_expands dominates dRRT*'s runtime; cap it tighter than the
-    # sample-count cap so the 5-min timeout is reached via computation,
-    # not iteration count alone.
+    # num_expands dominates runtime; cap it tighter than _SAMPLE_CAP.
     expands = min(3000, _scale(n_robots, base=200, cap=10_000))
     prm_l = _scale(n_robots, base=100)
     params = (
@@ -146,9 +83,8 @@ def _make_drrt_star(n_robots: int):
 
 def _make_staggered_grid(n_robots: int):
     from discopygal.solvers.staggered_grid import StaggeredGrid
-    # Grid-based, not sample-count-driven. Leaves eps/delta fixed; the
-    # dominant cost comes from the tensor search across robots, so the
-    # 5-min timeout naturally enforces a ceiling.
+    # Grid-based, not sample-count-driven; fix eps/delta and let the
+    # wall-clock cap bound tensor-search cost.
     params = "eps=0.01,delta=0.1"
     return (
         StaggeredGrid(
@@ -160,23 +96,21 @@ def _make_staggered_grid(n_robots: int):
 
 def _make_exact_single(n_robots: int):
     from discopygal.solvers.exact import ExactSingle
-    # Single-robot only — it will raise on n>1 scenes, which the
-    # benchmark records as "crash". That is the intended outcome.
+    # Single-robot only; raises on n>1 (recorded as "crash", intended).
     params = "eps=0.1"
     return ExactSingle(eps=0.1), params
 
 
 SOLVERS: Dict[str, Callable[[int], Any]] = {
-    "Staged":        _make_staged,
-    "PRM":           _make_prm,
-    "RRT":           _make_rrt,
-    "BiRRT":         _make_birrt,
-    "dRRT":          _make_drrt,
-    "dRRT_star":     _make_drrt_star,
+    "Staged": _make_staged,
+    "PRM": _make_prm,
+    "RRT": _make_rrt,
+    "BiRRT": _make_birrt,
+    "dRRT": _make_drrt,
+    "dRRT_star": _make_drrt_star,
     "StaggeredGrid": _make_staggered_grid,
-    "ExactSingle":   _make_exact_single,
+    "ExactSingle": _make_exact_single,
 }
-
 
 # ---------------------------------------------------------------------------
 # Scene discovery
@@ -215,7 +149,6 @@ def discover_scenes(selected: Optional[List[str]]) -> List[str]:
         if missing:
             raise SystemExit(f"Unknown scenes: {missing}")
         return [available[s] for s in selected]
-    # Ordered: known-order first, then whatever's left alphabetically.
     known = [available[n] for n in _DEFAULT_SCENE_ORDER if n in available]
     leftover = sorted(
         available[n] for n in available if n not in _DEFAULT_SCENE_ORDER
@@ -230,7 +163,6 @@ def discover_scenes(selected: Optional[List[str]]) -> List[str]:
 def _child(
         scene_path: str, solver_name: str, out_path: str, n_robots: int,
 ) -> None:
-    """Runs in a spawn-context subprocess.  Writes one JSON blob."""
     result: Dict[str, Any] = {}
     try:
         from discopygal.solvers_infra import Scene
@@ -244,10 +176,8 @@ def _child(
             solver.disable_verbose()
         except Exception:
             pass
-        # Some sampling solvers (notably StaggeredGrid) read
-        # ``self._bounding_box`` inside ``load_scene`` but don't
-        # populate it. Fill it in here when the solver opted in to a
-        # non-negative margin factor.
+        # StaggeredGrid reads self._bounding_box in load_scene but never
+        # populates it; fill it in when the solver opted into the knob.
         margin = getattr(solver, "bounding_margin_width_factor", -1)
         if (getattr(solver, "_bounding_box", None) is None
                 and margin is not None and margin >= 0):
@@ -325,10 +255,6 @@ def run_one(
     return data
 
 
-# ---------------------------------------------------------------------------
-# Scene metadata
-# ---------------------------------------------------------------------------
-
 def scene_metadata(path: str) -> Dict[str, int]:
     with open(path) as f:
         d = json.load(f)
@@ -337,10 +263,6 @@ def scene_metadata(path: str) -> Dict[str, int]:
         "num_obstacles": len(d.get("obstacles", [])),
     }
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 CSV_FIELDS = [
     "scene", "solver", "num_robots", "num_obstacles", "params",
@@ -389,7 +311,7 @@ def main() -> None:
             for solver_name in solvers:
                 i += 1
                 print(
-                    f"[{i:>3}/{total}] {scene_name} × {solver_name} ... ",
+                    f"[{i:>3}/{total}] {scene_name} x {solver_name} ... ",
                     end="", flush=True,
                 )
                 res = run_one(
@@ -418,7 +340,7 @@ def main() -> None:
                     + (f"  [{row['params']}]" if row['params'] else "")
                 )
 
-    print(f"\nDone. Results → {args.out}")
+    print(f"\nDone. Results -> {args.out}")
 
 
 if __name__ == "__main__":

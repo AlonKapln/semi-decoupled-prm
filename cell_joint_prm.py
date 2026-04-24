@@ -1,26 +1,10 @@
 """Ad-hoc per-(cell, timestep) joint k-robot PRM.
 
-Step 4 / step 7 of ``plan.tex``. At path realisation time the staged
-solver builds one small joint roadmap per cell per router timestep via
-:func:`build_adhoc_roadmap`. A *joint* configuration places up to ``k``
-robots simultaneously in the cell; the PRM finds a collision-free joint
-steer from an explicit entry configuration to an explicit exit
-configuration.
-
-Geometry
---------
-A joint configuration ``c = (p_1, …, p_k)`` is **valid** when
-
-    ∀ i ≠ j :  ‖p_i − p_j‖ ≥ 2r          (pairwise non-overlap)
-    ∀ i     :  p_i ∈ cell                (polygon containment)
-    ∀ i     :  p_i ∉ true_obstacles      (checker, when supplied)
-
-Two valid joint configurations are **connected** by a straight-line
-joint-space steer iff every interpolated configuration is also valid.
-For convex cells this collapses to a pairwise 2r check (solved exactly
-in closed form by ``_steer_pairwise_min_ok``); for non-convex cells
-from grid-only partitioning we additionally sweep polygon containment
-and check each robot's segment against the scene collision checker.
+A joint configuration is valid iff every pair is at least 2r apart,
+every robot lies inside the cell polygon, and every robot passes the
+scene-level collision checker. Straight-line joint steers are vetted
+by a closed-form pairwise-separation minimum plus a swept containment
+check.
 """
 
 import math
@@ -37,7 +21,7 @@ from discopygal.bindings import FT, Pol2, Point_2, Segment_2
 from partition import Partition
 
 
-# A joint configuration is a tuple of (x, y) tuples — one per robot slot.
+# A joint configuration is a tuple of (x, y) tuples, one per robot slot.
 JointConfig = Tuple[Tuple[float, float], ...]
 
 DEFAULT_STEER_STEPS = 10
@@ -45,29 +29,15 @@ DEFAULT_STEER_STEPS = 10
 
 @dataclass
 class AdhocResult:
-    """Return value of :func:`build_adhoc_roadmap`.
-
-    ``graph`` is ``None`` on failure; in that case ``reason`` names the
-    failure mode. The caller (``StagedSolver._plan_adhoc``) uses ``reason``
-    to decide whether escalating ``num_samples`` can help (``no_path`` and
-    ``sampling_failed`` → yes; ``entry_infeasible`` / ``exit_infeasible``
-    → no, the problem is the fixed endpoints).
-
-    ``interior_samples`` is the list of pure-random interior configs that
-    ended up accepted this build (i.e. not entry/exit, not bridge-burst).
-    The solver caches this per ``(cell_id, n_transit, pinned)`` and feeds
-    it back as ``reuse_samples`` on the next call with the same
-    configuration — saves the cost of re-drawing valid joint configs for
-    repeat visits to the same cell.
-    """
+    """graph is None on failure; reason is one of entry_infeasible,
+    exit_infeasible (endpoint bad, resampling won't help), no_path, or
+    sampling_failed (more samples may help)."""
 
     graph: Optional[nx.Graph]
     entry_cfg: JointConfig
     exit_cfg: JointConfig
     interior_samples: List[JointConfig] = field(default_factory=list)
     reason: Optional[str] = None
-    # Reason values: None (success), "entry_infeasible",
-    # "exit_infeasible", "no_path", "sampling_failed".
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +51,6 @@ def _polygon_bbox(poly: Pol2.Polygon_2) -> Tuple[float, float, float, float]:
 
 
 def _point_inside_polygon(poly: Pol2.Polygon_2, x: float, y: float) -> bool:
-    """Closed (boundary-inclusive) containment for a CGAL polygon."""
     side = poly.bounded_side(Point_2(FT(x), FT(y)))
     return side != Bounded_side.ON_UNBOUNDED_SIDE
 
@@ -100,15 +69,8 @@ def _pairwise_separated(points: List[Tuple[float, float]], min_dist_sq: float) -
 def _steer_pairwise_min_ok(
     c1: "JointConfig", c2: "JointConfig", min_dist_sq: float,
 ) -> bool:
-    """Exact pairwise separation over a straight-line joint steer.
-
-    For each robot pair ``(i, j)`` we have two linear trajectories
-    ``p_i(t) = c1[i] + t * (c2[i] - c1[i])`` and similarly for ``p_j``.
-    Their squared distance ``d²(t) = |p_i(t) - p_j(t)|²`` is a quadratic
-    in ``t``, minimised at a closed-form ``t*`` (clamped to ``[0, 1]``).
-    We compute that minimum exactly for every pair — no discretisation
-    miss, no false accepts from coarse step counts.
-    """
+    """Closed-form minimum of d(t)^2 over t in [0, 1] for every robot
+    pair along a straight-line joint steer."""
     k = len(c1)
     for i in range(k):
         a1x, a1y = c1[i]
@@ -127,7 +89,7 @@ def _steer_pairwise_min_ok(
             ry = dy1 - dy2
             rr = rx * rx + ry * ry
             if rr <= 1e-18:
-                # Parallel / zero relative velocity — constant distance.
+                # Parallel or zero relative velocity: constant distance.
                 if px * px + py * py < min_dist_sq:
                     return False
                 continue
@@ -144,12 +106,7 @@ def _steer_pairwise_min_ok(
 
 
 def _min_edge_distance(poly: Pol2.Polygon_2, x: float, y: float) -> float:
-    """Signed distance from ``(x, y)`` to the nearest edge of a CCW polygon.
-
-    Positive means inside, negative means outside.  For a convex CCW
-    polygon this equals the inset depth — i.e. how far from the boundary
-    the point sits.
-    """
+    """Signed distance to the nearest polygon edge (positive = inside, CCW)."""
     verts = [(v.x().to_double(), v.y().to_double()) for v in poly.vertices()]
     n = len(verts)
     min_d = float("inf")
@@ -160,7 +117,6 @@ def _min_edge_distance(poly: Pol2.Polygon_2, x: float, y: float) -> float:
         length = math.sqrt(ex * ex + ey * ey)
         if length < 1e-12:
             continue
-        # Signed distance: positive = left of edge = inside for CCW
         d = (ex * (y - ay) - ey * (x - ax)) / length
         if d < min_d:
             min_d = d
@@ -168,12 +124,8 @@ def _min_edge_distance(poly: Pol2.Polygon_2, x: float, y: float) -> float:
 
 
 def _config_distance(c1: JointConfig, c2: JointConfig) -> float:
-    """Maximum single-robot displacement between two joint configurations.
-
-    Used as the steer cost — the joint motion takes time proportional to
-    the slowest robot, so the longest individual displacement is the right
-    proxy.
-    """
+    # Joint motion is rate-limited by the slowest robot, so the max
+    # single-robot displacement is the natural steer cost.
     return max(math.hypot(a[0] - b[0], a[1] - b[1]) for a, b in zip(c1, c2))
 
 
@@ -185,29 +137,15 @@ def _steer_collision_free(
     poly: Optional[Pol2.Polygon_2] = None,
     checker=None,
 ) -> bool:
-    """Check pairwise separation along a straight-line joint-space steer.
-
-    If ``poly`` is ``None`` containment is assumed (valid for convex cells
-    from vertical decomposition). If ``poly`` is supplied, every
-    interpolated robot position is additionally tested for polygon
-    containment — required for the grid-only partition mode, whose cells
-    can be non-convex where inflated obstacle boundaries carve notches.
-
-    If ``checker`` is supplied (a discopygal ``ObjectCollisionDetection``
-    instance), each robot's straight-line segment is additionally vetted
-    via ``checker.is_edge_valid`` — the authoritative swept-disc vs scene-
-    obstacle check that ``verify_paths`` itself uses. This catches cases
-    where the polygon approximation of a curved inflated-obstacle boundary
-    (arc-vs-chord gap) incorrectly claims blocked area as free.
-    """
+    """Straight-line joint steer: exact pairwise separation, optional
+    polygon containment (non-convex grid cells), and scene-level
+    swept-disc validation via checker (arc-vs-chord gap)."""
     min_sq = (2.0 * robot_radius) ** 2
     k = len(c1)
-    # Exact pairwise separation along the straight-line joint steer.
     if not _steer_pairwise_min_ok(c1, c2, min_sq):
         return False
-    # Polygon containment is only approximate here; the discretised
-    # sweep still catches the typical cases and the obstacle checker
-    # below is authoritative for arcs.
+    # The discretised sweep is an approximation for non-convex cells;
+    # the checker below is authoritative for arc-adjacent regions.
     if poly is not None:
         for s in range(steps + 1):
             t = s / steps
@@ -218,8 +156,8 @@ def _steer_collision_free(
                     return False
     if checker is not None:
         for i in range(k):
-            # Degenerate zero-length segments (pinned holders) are always
-            # safe — skip them to avoid CGAL degenerate-segment asserts.
+            # Skip degenerate zero-length segments (pinned holders) to
+            # avoid CGAL degenerate-segment asserts.
             if c1[i] == c2[i]:
                 continue
             seg = Segment_2(
@@ -245,15 +183,8 @@ def _sample_joint_config(
     boundary_margin: float = 0.0,
     checker=None,
 ) -> Optional[JointConfig]:
-    """Incrementally sample a valid joint configuration of ``k`` robots.
-
-    Places robots one at a time. Each new robot must be inside the polygon,
-    at least ``boundary_margin`` from every edge, and separated from all
-    previously placed robots by at least ``2r``.
-
-    If ``pinned`` is given those positions are fixed (already validated by
-    the caller) and only the remaining slots are sampled.
-    """
+    """Place k robots incrementally: inside polygon, at least boundary_margin
+    from edges, pairwise at least 2r apart. Pinned slots are fixed."""
     if k == 0:
         return tuple(pinned or ())
 
@@ -274,9 +205,8 @@ def _sample_joint_config(
                 continue
             if not all((x - px) ** 2 + (y - py) ** 2 >= min_sq for px, py in points):
                 continue
-            # Authoritative check against true inflated obstacles. Needed
-            # for non-convex cells from grid-only partitioning where the
-            # polygon approximates arc boundaries with chords.
+            # Arc-exact check for non-convex cells: the polygon chord-
+            # approximates inflated-obstacle boundaries.
             if checker is not None and not checker.is_point_valid(
                 Point_2(FT(x), FT(y))
             ):
@@ -306,46 +236,12 @@ def build_adhoc_roadmap(
     checker=None,
     reuse_samples: Optional[List[JointConfig]] = None,
 ) -> AdhocResult:
-    """Build a single-timestep joint PRM for one cell.
+    """Single-timestep joint PRM for one cell.
 
-    Used by the staged solver at path-realisation time: for each
-    ``(cell, timestep)`` with active robots the solver builds a small
-    joint PRM whose joint *entry* and joint *exit* configurations are
-    inserted as explicit nodes, so there is no "nearest neighbour"
-    approximation at the endpoints.
-
-    Slot layout of every node in the returned graph::
-
-        (transit_0, …, transit_{n-1}, holder_0, …, holder_{m-1})
-
-    where ``n = len(entry_positions) = len(exit_positions)`` and
-    ``m = len(pinned_positions)``. Holder slots are pinned: every node
-    has its holder slots at exactly ``pinned_positions``, so holders do
-    not move along any path in the graph. Transit slots vary.
-
-    Args
-    ----
-    partition : the cell to plan inside.
-    entry_positions : current positions of the transit robots.
-    exit_positions : where each transit robot wants to end up (same
-        order as ``entry_positions``).
-    pinned_positions : positions of holding robots inside the cell.
-        Pinned to their current location at every node.
-    robot_radius : disc robot radius ``r``.
-    num_samples : number of random interior configurations to draw
-        (in addition to the explicit entry/exit nodes).
-    k_nearest : k-NN connection degree for the sampled graph.
-    steer_steps : discretisation of the swept-volume pairwise check.
-    rng : optional RNG for reproducibility.
-
-    Returns
-    -------
-    An :class:`AdhocResult`. On success ``result.graph`` is a populated
-    networkx graph and ``result.reason is None``; the caller runs
-    ``nx.shortest_path(result.graph, result.entry_cfg, result.exit_cfg,
-    weight='weight')``. On failure ``result.graph is None`` and
-    ``result.reason`` names the failure mode so the caller can decide
-    whether more samples would help.
+    Slot layout: (transit_0, ..., transit_{n-1}, holder_0, ..., holder_{m-1}).
+    Entry/exit configs are inserted as explicit nodes; holders are pinned
+    at every node. On failure the returned graph is None and reason names
+    the failure mode.
     """
     if rng is None:
         rng = random.Random()
@@ -367,7 +263,7 @@ def build_adhoc_roadmap(
     if len(exit_positions) != n_transit or k == 0:
         return AdhocResult(None, entry_cfg, exit_cfg, reason="entry_infeasible")
 
-    # Validate entry/exit: all inside cell + pairwise 2r separation.
+    # Validate entry/exit: inside cell + pairwise 2r separation.
     for cfg, tag in ((entry_cfg, "entry_infeasible"),
                      (exit_cfg, "exit_infeasible")):
         if not _pairwise_separated(list(cfg), min_sq):
@@ -376,8 +272,8 @@ def build_adhoc_roadmap(
             if not _point_inside_polygon(poly, x, y):
                 return AdhocResult(None, entry_cfg, exit_cfg, reason=tag)
 
-    # Narrow-cell margin fallback: try r-inset sampling first, fall
-    # back to 0 if even a single-robot r-inset probe fails.
+    # Narrow-cell margin fallback: try r-margin sampling first, fall
+    # back to 0 if even a single-robot r-margin probe fails.
     margin = r
     probe = _sample_joint_config(
         poly, 1, r, rng, boundary_margin=margin, max_tries_per_robot=50,
@@ -396,16 +292,22 @@ def build_adhoc_roadmap(
         graph.add_node(exit_cfg)
         samples.append(exit_cfg)
 
-    # Reused samples from the solver's cache (same cell, same n_transit,
-    # same pinned set). Re-validate each one — cell density may have been
-    # lowered by a Level B retry or the checker state may differ, so a
-    # previously-valid sample is not automatically valid now.
+    # Reused samples from the solver's cache; each must be re-validated
+    # because density retries and checker state can invalidate a
+    # previously-good sample.
     if reuse_samples:
+        rounded_pinned = tuple(
+            (round(x, 6), round(y, 6)) for x, y in pinned_positions
+        )
         for cfg in reuse_samples:
             if len(cfg) != k:
                 continue
-            # Holder slots must still match current pinned positions.
-            if n_pinned > 0 and tuple(cfg[n_transit:]) != tuple(pinned_positions):
+            # Holder slots must match pinned; round both sides to the
+            # same 6dp as the cache key so sub-precision drift does not
+            # silently reject every reused sample.
+            if n_pinned > 0 and tuple(
+                (round(x, 6), round(y, 6)) for x, y in cfg[n_transit:]
+            ) != rounded_pinned:
                 continue
             if cfg in graph:
                 continue
@@ -438,9 +340,7 @@ def build_adhoc_roadmap(
         )
         if raw is None:
             continue
-        # ``_sample_joint_config`` returns pinned positions first, then
-        # the newly sampled ones. Reorder to (transits…, holders…) so
-        # slot indices line up with ``entry_cfg`` and ``exit_cfg``.
+        # Reorder sampler output (pinned, transits) -> (transits, holders).
         if n_pinned > 0:
             cfg = tuple(list(raw[n_pinned:]) + list(raw[:n_pinned]))
         else:
@@ -451,12 +351,9 @@ def build_adhoc_roadmap(
         samples.append(cfg)
         interior_samples.append(cfg)
 
-    # Anchor-local bridge samples. Validated ports already sit in
-    # regions with a 2r escape, but the main random sampler still
-    # has a hard time hitting the narrow strip near the anchor when
-    # the cell is large relative to that strip. Seed a burst of extra
-    # samples in a small window around every transit slot of every
-    # anchor so k-NN can thread the anchor through a local chain.
+    # Anchor-local bridge samples: seed a burst around every transit
+    # slot of every anchor so k-NN can thread the anchor through a
+    # local chain when random sampling misses the narrow strip.
     bridge_burst = max(10, num_samples // 2)
     bridge_radius = max(3.0 * r, 0.4)
     anchor_list = [entry_cfg] if exit_cfg == entry_cfg else [entry_cfg, exit_cfg]
@@ -483,7 +380,7 @@ def build_adhoc_roadmap(
                 graph.add_node(cfg)
                 samples.append(cfg)
 
-    # k-NN connection with swept-volume pairwise check.
+    # k-NN connections with swept-volume pairwise check.
     for i, ci in enumerate(samples):
         candidates = sorted(
             (
@@ -502,10 +399,8 @@ def build_adhoc_roadmap(
             ):
                 graph.add_edge(ci, cj, weight=distance)
 
-    # Anchor brute-force pass: try every (entry, other) and (exit, other)
-    # straight-line steer. ``num_samples`` is small, so the O(N) per
-    # anchor is cheap and it recovers paths that k-NN misses when the
-    # anchor sits near an awkward corner.
+    # Anchor brute-force: try every straight-line steer from each anchor.
+    # Cheap at this sample size and recovers paths k-NN misses at corners.
     anchors = [entry_cfg]
     if exit_cfg != entry_cfg:
         anchors.append(exit_cfg)
@@ -520,9 +415,6 @@ def build_adhoc_roadmap(
                     anchor, other, weight=_config_distance(anchor, other),
                 )
 
-    # If only the explicit entry/exit nodes made it into the graph (every
-    # random sample was rejected), surface that as its own reason so the
-    # caller can escalate num_samples rather than lower cell density.
     if len(samples) <= (2 if entry_cfg != exit_cfg else 1):
         return AdhocResult(
             graph, entry_cfg, exit_cfg,

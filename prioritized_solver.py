@@ -1,21 +1,7 @@
-"""Prioritized space-time A* (cooperative A*) on the high-level cell graph.
-
-Strategy
---------
-Prioritized planning (Erdmann & Lozano-Pérez, 1987) with per-robot A*
-on a time-expanded graph and a shared reservation table — i.e. Silver's
-Cooperative A* (2005). Robots are planned one at a time in decreasing
-order of their start→goal graph distance (longest path first) so scarce
-corridor capacity goes to the robots that need it most. Each planned
-robot adds its time-indexed occupancy to the reservation table;
-subsequent A* searches reject any ``(node, time)`` state that would
-violate vertex/swap conflicts or a per-cell capacity bound.
-
-Output
-------
-``RoutingSolution = Dict[int, List[str]]`` mapping each robot index to
-its time-indexed node sequence ``[node_at_t0, …, node_at_T]``. Returns
-``None`` if any robot is unroutable.
+"""Prioritized space-time A* on the high-level graph (Silver's
+Cooperative A*, 2005). Robots are planned longest-first against a
+shared reservation table that enforces vertex, swap, and per-cell
+capacity conflicts. Returns None if any robot is unroutable.
 """
 
 import heapq
@@ -35,18 +21,17 @@ def solve_prioritized(
         time_horizon: int,
         verbose: bool = False,
 ) -> Optional[RoutingSolution]:
-    """Route every robot on the high-level graph. See module docstring."""
     G = hlg.graph
     capacity_by_cell = _get_capacity_by_cell(hlg)
     node_to_cells = _build_node_to_cells(hlg)
 
-    # Priority order: plan longest start→goal path first.
+    # Priority order: plan the longest start-to-goal path first.
     priorities: List[Tuple[int, int]] = []
     for r in range(num_robots):
         try:
             dist = nx.shortest_path_length(G, f"start_{r}", f"goal_{r}")
         except (nx.NetworkXNoPath, nx.NodeNotFound):
-            dist = time_horizon  # unreachable → plan first so we fail fast
+            dist = time_horizon  # unreachable: plan first so we fail fast
         priorities.append((dist, r))
     priorities.sort(reverse=True)
     robot_order = [r for _, r in priorities]
@@ -95,7 +80,7 @@ def solve_prioritized(
 # ---------------------------------------------------------------------------
 
 def _build_node_to_cells(hlg: HighLevelGraph) -> Dict[str, List[int]]:
-    """Invert cell_incident_nodes → {node: [cell_indices]}."""
+    """Invert cell_incident_nodes -> {node: [cell_indices]}."""
     mapping: Dict[str, List[int]] = {}
     for ci, nodes in hlg.cell_incident_nodes.items():
         for n in nodes:
@@ -104,7 +89,7 @@ def _build_node_to_cells(hlg: HighLevelGraph) -> Dict[str, List[int]]:
 
 
 def _get_capacity_by_cell(hlg: HighLevelGraph) -> Dict[int, int]:
-    """Cell index → density. Read from graph edge attributes."""
+    """Cell index -> density, read from edge attributes."""
     capacity_by_cell: Dict[int, int] = {}
     for _, _, data in hlg.graph.edges(data=True):
         capacity_by_cell[data["cell_id"]] = data["capacity"]
@@ -119,8 +104,8 @@ def _capacity_ok(
         densities: Dict[int, int],
         hlg: HighLevelGraph,
 ) -> bool:
-    """True iff placing one more robot at ``node`` at ``time`` fits every
-    incident cell's capacity."""
+    """True iff placing one more robot at (node, time) fits every incident
+    cell's capacity."""
     for ci in node_to_cells.get(node, []):
         cap = densities.get(ci)
         if cap is None:
@@ -141,12 +126,9 @@ def _swap_conflict(
         reservation: Dict[str, Dict[int, Set[int]]],
         hlg: HighLevelGraph,
 ) -> bool:
-    """True iff moving ``from_node → to_node`` at ``time`` collides with a
-    robot moving the opposite direction on the same edge.
-
-    Uses ``hlg.node_equivalence`` so geometric swaps are caught even when
-    the two nodes are technically different (e.g. ``start_i`` == ``goal_j``).
-    """
+    """True iff from_node -> to_node at `time` collides with a robot going
+    the other way. Uses node_equivalence so swaps between geometrically
+    coincident names (e.g. start_i == goal_j) are caught."""
     equiv = hlg.node_equivalence
     robots_at_to = set()
     for n in equiv.get(to_node, [to_node]):
@@ -169,13 +151,11 @@ def _astar_time_expanded(
         densities: Dict[int, int],
         hlg: HighLevelGraph,
 ) -> Optional[List[str]]:
-    """A* on ``(node, time)`` with vertex/swap conflicts and capacity.
+    """A* on (node, time) with vertex/swap/capacity conflicts.
 
-    Uses kinematic edge cost (``cost`` attribute = Euclidean distance
-    between HLG node positions) for both the g-score step and the h
-    estimate (``single_source_dijkstra_path_length`` on the underlying
-    HLG, which is admissible because each realised segment is at least
-    as long as the straight-line distance).
+    Edge cost is the Euclidean `cost` attribute; the heuristic is
+    Dijkstra-to-goal on the untimed graph (admissible because realised
+    segments are never shorter than the straight-line distance).
     """
     try:
         dist_to_goal = nx.single_source_dijkstra_path_length(
@@ -190,6 +170,9 @@ def _astar_time_expanded(
     ]
     visited: Set[Tuple[str, int]] = set()
     came_from: Dict[Tuple[str, int], Tuple[str, int]] = {}
+    # First-push came_from would record a suboptimal predecessor under
+    # a consistent heuristic; overwrite on any strictly-improving push.
+    g_score: Dict[Tuple[str, int], float] = {(start, 0): 0.0}
 
     while pq:
         _f, g, _, node, time = heapq.heappop(pq)
@@ -238,16 +221,19 @@ def _astar_time_expanded(
                 continue
 
             if next_node == node:
-                step_cost = 0.0  # hold — no geometric motion
+                step_cost = 0.0  # holding in place is free
             else:
                 step_cost = G.edges[node, next_node].get("cost", 1.0)
             new_g = g + step_cost
+            next_state = (next_node, next_time)
+            if new_g >= g_score.get(next_state, float("inf")):
+                continue
+            g_score[next_state] = new_g
+            came_from[next_state] = (node, time)
             h = dist_to_goal.get(next_node, float("inf"))
             counter += 1
             heapq.heappush(
                 pq, (new_g + h, new_g, counter, next_node, next_time),
             )
-            if (next_node, next_time) not in came_from:
-                came_from[(next_node, next_time)] = (node, time)
 
     return None

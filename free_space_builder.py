@@ -1,80 +1,29 @@
-"""Build the configuration-space free region for disc robots.
+"""Minkowski-inflated free-space arrangement for disc robots.
 
-Step 1 of ``plan.tex``.
-
-Geometry
---------
-For a disc robot of radius ``r`` moving among polygonal obstacles ``O_i``,
-the *configuration-space obstacle* of each ``O_i`` is its Minkowski sum with a
-disc of radius ``r``::
-
-    C(O_i) = O_i ⊕ D(r) = { o + d : o ∈ O_i, d ∈ D(r) }
-
-A robot center can occupy any point that lies outside every ``C(O_i)`` and
-inside the workspace boundary. The union of all such points is the
-*configuration-space free region* ``C_free``.
-
-We do not store ``C_free`` as one polygon. Instead we build a CGAL
-``Arrangement_2`` whose edges are the boundaries of all ``C(O_i)`` plus the
-bounding-box edges. The arrangement partitions the plane into faces; we tag
-each face's ``data()`` as ``FREE`` or ``BLOCKED``. This arrangement is the
-exact substrate that the trapezoidal decomposition (step 2) consumes.
-
-Pipeline (per obstacle)
------------------------
-1. ``Ms2.approximated_offset_2(obstacle.poly, r, eps)`` returns a
-   ``Polygon_with_holes_2`` whose outer boundary is a polyline-with-arcs
-   approximation of ``∂C(O_i)`` to within ``eps``.
-2. The boundary curves are inserted into a fresh ``Arrangement_2``.
-3. The face just inside the outer boundary is the inflated obstacle and is
-   tagged ``BLOCKED``; everything else is ``FREE``.
-
-All per-obstacle arrangements are then overlaid (``Aos2.overlay``), and a
-final overlay with the bounding-box arrangement clips the result to the
-workspace.
-
-Why an arrangement instead of a polygon-set
--------------------------------------------
-``discopygal.bindings.Bso2`` only exposes Boolean operations on the
-``Aos2.Gps_traits_2`` general polygon family, while ``Ms2`` returns
-``Pol2.Polygon_with_holes_2``. The two type families are not directly
-compatible. Working at the arrangement level sidesteps the conversion and is
-exactly what ``discopygal.solvers.exact.exact_single`` does — we lift its
-``construct_cspace`` so we inherit its tested CGAL plumbing.
+Every polygonal obstacle is inflated by r via Ms2.approximated_offset_2
+and merged into a single CGAL Arrangement_2 whose faces are tagged
+FREE / BLOCKED.
 """
-
-from typing import Optional, Tuple
 
 from discopygal.bindings import (
     Arrangement_2,
     Aos2,
     Arr_overlay_function_traits,
     Curve_2,
-    FT,
     Ms2,
     Point_2,
 )
 from discopygal.geometry_utils import bounding_boxes, conversions
 from discopygal.solvers_infra import Scene, ObstaclePolygon
 
-# Face data values
 FREE = 0
 BLOCKED = 1
 
 
 def _tree_overlay(arrs, traits) -> Arrangement_2:
-    """Balanced pairwise merge of a list of arrangements.
-
-    The naive sequential fold ``((a0 ⊕ a1) ⊕ a2) ⊕ …`` is a left-deep
-    reduction whose accumulator grows after every step; each overlay's
-    cost is roughly proportional to the total edge count of its two
-    operands, so the total work is quadratic in the final edge count.
-
-    A balanced pairwise merge keeps operands of comparable size and
-    reduces depth from ``O(n)`` to ``O(log n)`` — for warehouse-scale
-    scenes with dozens of obstacles this is a real speedup. The caller
-    guarantees ``len(arrs) >= 1``.
-    """
+    """Balanced pairwise merge of arrangements (log n depth instead of
+    the left-fold's quadratic accumulator)."""
+    assert arrs, "_tree_overlay needs at least one arrangement"
     while len(arrs) > 1:
         merged = [
             Aos2.overlay(arrs[i], arrs[i + 1], traits)
@@ -90,20 +39,9 @@ def construct_free_space(
     scene: Scene,
     robot_radius: float,
     eps: float = 1e-4,
-    bounding_box: Optional[Tuple[FT, FT, FT, FT]] = None,
 ) -> Arrangement_2:
-    """Return a CGAL arrangement representing the disc-robot free space.
-
-    Each face's ``data()`` is ``FREE`` (0) for traversable area or ``BLOCKED`` (1)
-    for inflated obstacles / outside the bounding box.
-
-    Args:
-        scene: discopygal scene with disc robots and polygonal obstacles.
-        robot_radius: radius used to inflate obstacles.
-        eps: precision passed to ``Ms2.approximated_offset_2``.
-        bounding_box: optional ``(min_x, max_x, min_y, max_y)`` in CGAL ``FT``;
-            defaults to ``calc_scene_bounding_box(scene)``.
-    """
+    """Arrangement whose face data is FREE (0) for traversable area or
+    BLOCKED (1) for inflated obstacles / outside the bounding box."""
     traits = Arr_overlay_function_traits(lambda x, y: x + y)
 
     arrangements = []
@@ -127,20 +65,16 @@ def construct_free_space(
 
         arrangements.append(arr)
 
-    # Overlay all per-obstacle arrangements via a balanced pairwise
-    # merge. Handles the zero-obstacle case by seeding a single FREE
-    # arrangement so the downstream bounding-box overlay has something
-    # to work with.
+    # Seed the zero-obstacle case with a single FREE arrangement so the
+    # bounding-box overlay below has something to merge against.
     if not arrangements:
         empty = Arrangement_2()
         empty.unbounded_face().set_data(FREE)
         arrangements.append(empty)
     arr = _tree_overlay(arrangements, traits)
 
-    # Bounding-box arrangement: inside == FREE, unbounded == BLOCKED
-    if bounding_box is None:
-        bounding_box = bounding_boxes.calc_scene_bounding_box(scene)
-    min_x, max_x, min_y, max_y = bounding_box
+    # Bounding box: inside FREE, unbounded BLOCKED.
+    min_x, max_x, min_y, max_y = bounding_boxes.calc_scene_bounding_box(scene)
 
     bounding_box_arr = Arrangement_2()
     Aos2.insert(
