@@ -9,7 +9,7 @@ check.
 
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import networkx as nx
@@ -19,6 +19,7 @@ from CGALPY.CGALPY import Bounded_side
 from discopygal.bindings import FT, Pol2, Point_2, Segment_2
 
 from partition import Partition
+
 
 # A joint configuration is a tuple of (x, y) tuples, one per robot slot.
 # Canonical order: (transit_0, ..., transit_{n-1}, holder_0, ..., holder_{m-1}).
@@ -44,7 +45,6 @@ class AdhocResult:
     graph: Optional[nx.Graph]
     entry_cfg: JointConfig
     exit_cfg: JointConfig
-    interior_samples: List[JointConfig] = field(default_factory=list)
     reason: Optional[str] = None
 
 
@@ -213,19 +213,19 @@ def _sample_joint_config(
             if not _point_inside_polygon(poly, x, y):
                 continue
             if not all(
-                    (x - tx) ** 2 + (y - ty) ** 2 >= min_sq
-                    for tx, ty in transits
+                (x - tx) ** 2 + (y - ty) ** 2 >= min_sq
+                for tx, ty in transits
             ):
                 continue
             if not all(
-                    (x - hx) ** 2 + (y - hy) ** 2 >= min_sq
-                    for hx, hy in holders
+                (x - hx) ** 2 + (y - hy) ** 2 >= min_sq
+                for hx, hy in holders
             ):
                 continue
             # Arc-exact check for non-convex cells: the polygon chord-
             # approximates inflated-obstacle boundaries.
             if checker is not None and not checker.is_point_valid(
-                    Point_2(FT(x), FT(y))
+                Point_2(FT(x), FT(y))
             ):
                 continue
             transits.append((x, y))
@@ -237,52 +237,19 @@ def _sample_joint_config(
 
 
 # ---------------------------------------------------------------------------
-# Cache replay
-# ---------------------------------------------------------------------------
-
-def _revalidate_cached(
-        cfg: JointConfig,
-        n_transit: int,
-        rounded_pinned: Tuple[Tuple[float, float], ...],
-        poly: Pol2.Polygon_2,
-        min_dist_sq: float,
-        checker,
-        graph: nx.Graph,
-) -> Optional[JointConfig]:
-    """Return cfg if it survives every cache-replay check, else None.
-
-    Checks: slot-count match, holder-slots match the rounded pinned
-    set, not already in graph, _is_valid_config under current cell and
-    checker state.
-    """
-    if len(cfg) != n_transit + len(rounded_pinned):
-        return None
-    if rounded_pinned and tuple(
-            (round(x, 6), round(y, 6)) for x, y in cfg[n_transit:]
-    ) != rounded_pinned:
-        return None
-    if cfg in graph:
-        return None
-    if not _is_valid_config(cfg, poly, min_dist_sq, checker):
-        return None
-    return cfg
-
-
-# ---------------------------------------------------------------------------
 # Ad-hoc per-(cell, timestep) roadmap
 # ---------------------------------------------------------------------------
 
 def build_adhoc_roadmap(
-        partition: Partition,
-        entry_positions: List[Tuple[float, float]],
-        exit_positions: List[Tuple[float, float]],
-        pinned_positions: List[Tuple[float, float]],
-        robot_radius: float,
-        num_samples: int = 15,
-        k_nearest: int = 6,
-        rng: Optional[random.Random] = None,
-        checker=None,
-        reuse_samples: Optional[List[JointConfig]] = None,
+    partition: Partition,
+    entry_positions: List[Tuple[float, float]],
+    exit_positions: List[Tuple[float, float]],
+    pinned_positions: List[Tuple[float, float]],
+    robot_radius: float,
+    num_samples: int = 15,
+    k_nearest: int = 6,
+    rng: Optional[random.Random] = None,
+    checker=None,
 ) -> AdhocResult:
     """Single-timestep joint PRM for one cell.
 
@@ -321,7 +288,6 @@ def build_adhoc_roadmap(
 
     graph = nx.Graph()
     samples: List[JointConfig] = []
-    interior_samples: List[JointConfig] = []
 
     # Anchors used by bridge-burst sampling AND anchor brute-force connection.
     anchors = [entry_cfg] if exit_cfg == entry_cfg else [entry_cfg, exit_cfg]
@@ -329,24 +295,6 @@ def build_adhoc_roadmap(
     for a in anchors:
         graph.add_node(a)
         samples.append(a)
-
-    # Reused samples from the solver's cache; each must be re-validated
-    # because density retries and checker state can invalidate a
-    # previously-good sample. Holder slots are matched on rounded
-    # coords so sub-precision drift between timesteps does not silently
-    # reject every reused sample.
-    if reuse_samples:
-        rounded_pinned = tuple(
-            (round(x, 6), round(y, 6)) for x, y in pinned_positions
-        )
-        for cfg in reuse_samples:
-            if _revalidate_cached(
-                    cfg, n_transit, rounded_pinned, poly, min_sq, checker, graph,
-            ) is None:
-                continue
-            graph.add_node(cfg)
-            samples.append(cfg)
-            interior_samples.append(cfg)
 
     # Random interior samples with holders pinned. Output is already in
     # canonical (transits..., holders...) order.
@@ -359,13 +307,10 @@ def build_adhoc_roadmap(
             continue
         graph.add_node(cfg)
         samples.append(cfg)
-        interior_samples.append(cfg)
 
     # Anchor-local bridge samples: seed a burst around every transit
     # slot of every anchor so k-NN can thread the anchor through a
     # local chain when random sampling misses the narrow strip.
-    # Excluded from interior_samples on purpose so the cross-call cache
-    # stays dominated by pure-random configs.
     bridge_burst = max(10, num_samples // 2)
     bridge_radius = max(3.0 * r, 0.4)
     for anchor in anchors:
@@ -379,7 +324,7 @@ def build_adhoc_roadmap(
                 if not _point_inside_polygon(poly, bx, by):
                     continue
                 if checker is not None and not checker.is_point_valid(
-                        Point_2(FT(bx), FT(by))
+                    Point_2(FT(bx), FT(by))
                 ):
                     continue
                 trial = list(anchor[:n_transit])
@@ -411,8 +356,7 @@ def build_adhoc_roadmap(
                 graph.add_edge(ci, cj, weight=distance)
 
     # Anchor brute-force: try every straight-line steer from each anchor.
-    # Cheap at this sample size and recovers paths k-NN misses at corners -
-    # This in face causes our solver to only use the sampled map when we need to go around an obstacle or holding robot.
+    # Cheap at this sample size and recovers paths k-NN misses at corners.
     for anchor in anchors:
         for other in samples:
             if other is anchor or graph.has_edge(anchor, other):
@@ -423,14 +367,6 @@ def build_adhoc_roadmap(
                 )
 
     if len(samples) <= len(anchors):
-        return AdhocResult(
-            graph, entry_cfg, exit_cfg,
-            interior_samples=interior_samples,
-            reason="sampling_failed",
-        )
+        return AdhocResult(graph, entry_cfg, exit_cfg, reason="sampling_failed")
 
-    return AdhocResult(
-        graph, entry_cfg, exit_cfg,
-        interior_samples=interior_samples,
-        reason=None,
-    )
+    return AdhocResult(graph, entry_cfg, exit_cfg, reason=None)
