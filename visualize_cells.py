@@ -4,7 +4,7 @@ CLI: python visualize_cells.py scenes/tight_rooms.json [--density N]
      saves to visualizations/<scene>_d<density>.png by default.
 
 Library: draw_cells(scene, partitions, hlg, robot_radius, save_path=...)
-is called by the staged solver after every decomposition build.
+is called by the pPRM solver after every decomposition build.
 """
 
 import argparse

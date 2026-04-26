@@ -1,4 +1,4 @@
-"""Staged multi-robot motion planning solver.
+"""Partitioned PRM (pPRM) multi-robot motion planning solver.
 
 Pipeline: Minkowski free space -> grid partition -> high-level
 cell-adjacency graph -> prioritized space-time A* routing -> per
@@ -96,8 +96,8 @@ def _node_position_in_cell(
     return hlg.node_positions.get(node_name)
 
 
-class StagedSolver(Solver):
-    """Staged multi-robot solver.
+class pPRMSolver(Solver):
+    """Partitioned-PRM multi-robot solver.
 
     num_samples     PRM samples per cell.
     k_nearest       PRM neighbour connections per sample.

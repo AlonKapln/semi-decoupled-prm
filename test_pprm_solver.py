@@ -1,5 +1,6 @@
-"""End-to-end tests for StagedSolver. Outputs are validated via
+"""End-to-end tests for pPRMSolver. Outputs are validated via
 verify_paths."""
+
 
 import os
 import sys
@@ -14,7 +15,7 @@ from discopygal.solvers_infra import (
 )
 from discopygal.solvers_infra.verify_paths import verify_paths
 
-from staged_solver import StagedSolver
+from pprm_solver import pPRMSolver
 
 SCENES_DIR = os.path.join(os.path.dirname(__file__), "scenes")
 
@@ -30,7 +31,7 @@ def _run_solver(
     max_cell_density: int = 100,
     verbose: bool = True,
 ) -> PathCollection:
-    solver = StagedSolver(
+    solver = pPRMSolver(
         num_samples=num_samples,
         k_nearest=k_nearest,
         max_cell_density=max_cell_density,
@@ -214,7 +215,7 @@ def test_warehouse():
 def test_solver_viewer_compat():
     print("\n=== Test: solver_viewer compatibility ===")
     scene = create_crossing_scene()
-    solver = StagedSolver(num_samples=20)
+    solver = pPRMSolver(num_samples=20)
     solver.verbose = False
     solver.load_scene(scene)
     pc = solver.solve()
@@ -247,7 +248,7 @@ def test_solver_viewer_compat():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("Staged Solver Test Suite")
+    print("pPRM Solver Test Suite")
     print("=" * 60)
 
     test_crossing()

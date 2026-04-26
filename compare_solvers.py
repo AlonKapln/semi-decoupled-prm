@@ -1,3 +1,9 @@
+"""Benchmark pPRMSolver against discopygal's own solvers. Each
+(scene, solver) pair runs in a fresh spawn subprocess for timeout and
+crash isolation, and verify_paths validates the output. One CSV row
+per run.
+"""
+
 import argparse
 import csv
 import json
@@ -18,13 +24,13 @@ def _scale(n_robots: int, base: int, cap: int = _SAMPLE_CAP) -> int:
     return int(min(cap, base * (1 + (n - 1) ** 2)))
 
 
-def _make_staged(n_robots: int):
-    from staged_solver import StagedSolver
+def _make_pprm(n_robots: int):
+    from pprm_solver import pPRMSolver
     # num_samples is per-(cell, timestep), so it scales with cell-local n.
     ns = min(120, 30 + 10 * n_robots)
     params = f"num_samples={ns},k_nearest=8"
     return (
-        StagedSolver(
+        pPRMSolver(
             num_samples=ns, k_nearest=8, max_cell_density=100,
         ),
         params,
@@ -102,7 +108,7 @@ def _make_exact_single(n_robots: int):
 
 
 SOLVERS: Dict[str, Callable[[int], Any]] = {
-    "Staged": _make_staged,
+    "pPRM": _make_pprm,
     "PRM": _make_prm,
     "RRT": _make_rrt,
     "BiRRT": _make_birrt,

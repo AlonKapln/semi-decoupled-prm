@@ -2,7 +2,7 @@
 
 Run once: ``python3 scenes/_build_edge_cases.py``. Produces JSON files
 consumable by ``Scene.from_file`` and by the benchmark script. Some
-scenes are intentionally hard or unsolvable for the staged solver — that
+scenes are intentionally hard or unsolvable for the pPRM solver — that
 is the point: the benchmark highlights where each planner breaks.
 """
 
