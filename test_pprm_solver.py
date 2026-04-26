@@ -1,7 +1,3 @@
-"""End-to-end tests for pPRMSolver. Outputs are validated via
-verify_paths."""
-
-
 import os
 import sys
 import time

@@ -1,11 +1,3 @@
-"""High-level cell-adjacency graph for space-time routing.
-
-Nodes are validated boundary ports on shared edges plus robot starts
-and goals. Each edge connects two nodes inside the same cell and
-carries cell_id, capacity, and cost. Each port's point inside each
-incident cell is precomputed so path realisation can look it up directly.
-"""
-
 import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -17,27 +9,22 @@ from discopygal.bindings import FT, Point_2, Pol2
 
 from partition import Partition
 
-# Decimal places used when hashing shared-edge endpoints.
 _COORD_PRECISION = 10
 
-# Along-edge spacing between parallel ports on the same shared edge
-# (units of r). Below ~8r starves the joint PRM; above ~16r under-uses
-# long walls.
+# Min along-edge spacing between parallel ports (units of r).
 _MIN_PORT_SPACING_R = 10.0
 
-# Minimum separation between two port points on different shared edges
-# of the same cell (units of r). 2r is the joint-PRM pairwise floor;
-# 2.5r gives steering room.
+# Min separation between two port points on different shared edges of
+# the same cell (units of r). 2r is the joint-PRM floor; 2.5r gives
+# steering room.
 _MIN_CROSS_EDGE_PORT_POINT_SEP_R = 2.5
 
-# Depth of a port point inward from its shared edge (units of r). Must
-# be > 1 so opposing port points sit more than 2r apart. 2.1r puts
-# opposing points 4.2r apart and keeps a holder 1.1r clear of the edge.
+# Port-point inset depth (units of r). Must be > 1; 2.1r puts opposing
+# points 4.2r apart and keeps each 1.1r clear of the shared edge.
 _PORT_POINT_DEPTH_R = 2.1
 
-# Margin between a port and its shared-edge endpoints (units of r).
-# 5r keeps cross-edge port points at meeting corners above
-# _MIN_CROSS_EDGE_PORT_POINT_SEP_R. Capped at 40% of edge length.
+# Margin (in r) between a port and its shared-edge endpoints, capped at
+# 40% of edge length so short edges still admit a centre port.
 _PORT_EDGE_END_MARGIN_R = 5.0
 
 
@@ -52,15 +39,12 @@ class HighLevelGraph:
     goal_cells: Dict[int, int]
     # node -> every node at the same rounded position (includes self).
     # Two distinct nodes can share a coordinate (e.g. start_i == goal_j
-    # on a swap); router conflict checks must treat them as one point.
+    # on a swap); router conflict checks treat them as one point.
     node_equivalence: Dict[str, List[str]]
 
 
-# ---------------------------------------------------------------------------
-# Geometry helpers
-# ---------------------------------------------------------------------------
-
 def _point_in_polygon(poly: Pol2.Polygon_2, x: float, y: float) -> bool:
+    """True iff (x, y) is inside or on the polygon boundary."""
     return poly.bounded_side(
         Point_2(FT(x), FT(y)),
     ) != Bounded_side.ON_UNBOUNDED_SIDE
@@ -69,7 +53,8 @@ def _point_in_polygon(poly: Pol2.Polygon_2, x: float, y: float) -> bool:
 def _find_shared_edges(
         partitions: List[Partition],
 ) -> List[Tuple[int, int, Tuple[float, float], Tuple[float, float]]]:
-    """Return (cell_i, cell_j, v1, v2) with cell_i < cell_j."""
+    """Return (cell_i, cell_j, v1, v2) tuples with cell_i < cell_j for
+    every pair of partitions that shares a vertex-pair edge."""
     cell_edge_sets: List[set] = []
     for p in partitions:
         verts = [
@@ -100,7 +85,9 @@ def _edge_inward_normal(
         v2: Tuple[float, float],
         poly: Pol2.Polygon_2,
 ) -> Optional[Tuple[float, float]]:
-    """Unit vector from edge midpoint into the cell interior, or None."""
+    """Unit vector from edge midpoint into the cell interior, or None
+    if the edge is degenerate or the polygon orientation can't be
+    determined locally."""
     dx, dy = v2[0] - v1[0], v2[1] - v1[1]
     length = math.hypot(dx, dy)
     if length < 1e-12:
@@ -125,13 +112,8 @@ def _fixed_port_point(
         robot_radius: float,
         checker,
 ) -> Optional[Tuple[float, float]]:
-    """Port point _PORT_POINT_DEPTH_R * r inside the cell, or None if rejected.
-
-    A fixed depth keeps opposing port points a fixed 2 * _PORT_POINT_DEPTH_R * r
-    apart and keeps each point (_PORT_POINT_DEPTH_R - 1) * r clear of the
-    shared edge. When a holder pins at this point, a transit sweeping
-    through the neighbouring cell stays strictly more than 2r away.
-    """
+    """Port point at depth _PORT_POINT_DEPTH_R * r, or None if it lands
+    outside the polygon or fails the obstacle checker."""
     cx = px + _PORT_POINT_DEPTH_R * robot_radius * normal_x
     cy = py + _PORT_POINT_DEPTH_R * robot_radius * normal_y
     if not _point_in_polygon(poly, cx, cy):
@@ -152,10 +134,17 @@ def _has_2r_escape(
         n_dirs: int = 8,
         n_steps: int = 5,
 ) -> bool:
-    """True iff a 2r straight line from (x, y) stays valid in some direction.
+    """True iff some direction admits a 2r straight line from (x, y)
+    that stays inside the polygon and clear of obstacles. Distinguishes
+    dead-end pockets from narrow but traversable slivers.
 
-    Distinguishes dead-end pockets (no 2r line fits anywhere) from narrow
-    decomposition slivers whose lengthwise direction admits a 2r line.
+    :param x: query x.
+    :param y: query y.
+    :param poly: cell polygon.
+    :param robot_radius: disc radius r.
+    :param checker: obstacle checker, or None.
+    :param n_dirs: directions tested (uniform on [0, 2pi)).
+    :param n_steps: discretisation per ray.
     """
     d = 2.0 * robot_radius
     for k in range(n_dirs):
@@ -191,13 +180,23 @@ def _sample_valid_port_points(
         forbid_near_i: Optional[List[Tuple[float, float]]] = None,
         forbid_near_j: Optional[List[Tuple[float, float]]] = None,
 ) -> List[Optional[Tuple[Tuple[float, float], Tuple[float, float]]]]:
-    """Per sample index along the edge, the (point_i, point_j) pair if valid.
+    """For each of `samples` indices along the edge, the (point_i,
+    point_j) pair if valid on both sides, else None.
 
-    Both port points must be inside their cell, pass the scene checker,
-    admit a 2r escape, and keep the sweep segment between them more than
-    2r from every anchor assigned to either incident cell. The sweep's
-    min-distance to an anchor can be smaller than either endpoint's, so
-    we reject against the whole segment, not the endpoints alone.
+    A pair is valid if both points are inside their cell, both pass the
+    obstacle checker, both admit a 2r escape, and the line between them
+    stays at least 2r from every anchor in either incident cell.
+
+    :param v1: edge endpoint 1.
+    :param v2: edge endpoint 2.
+    :param poly_i: cell-i polygon.
+    :param poly_j: cell-j polygon.
+    :param robot_radius: disc radius r.
+    :param checker: obstacle checker.
+    :param samples: number of sample positions along the edge.
+    :param forbid_near_i: anchors in cell i to keep the sweep clear of.
+    :param forbid_near_j: anchors in cell j to keep the sweep clear of.
+    :return: per-sample-index optional (point_i, point_j) pair.
     """
     ni = _edge_inward_normal(v1, v2, poly_i)
     nj = _edge_inward_normal(v1, v2, poly_j)
@@ -244,7 +243,6 @@ def _sample_valid_port_points(
         pj = _fixed_port_point(px, py, nj[0], nj[1], poly_j, robot_radius, checker)
         if pj is None:
             continue
-
         if not _has_2r_escape(pi[0], pi[1], poly_i, robot_radius, checker):
             continue
         if not _has_2r_escape(pj[0], pj[1], poly_j, robot_radius, checker):
@@ -258,7 +256,7 @@ def _sample_valid_port_points(
 def _contiguous_runs(
         entries: List[Optional[Tuple[Tuple[float, float], Tuple[float, float]]]],
 ) -> List[Tuple[int, int]]:
-    """(start, end) inclusive index pairs for each maximal non-None run."""
+    """Inclusive (start, end) index pairs for each maximal non-None run."""
     runs: List[Tuple[int, int]] = []
     n = len(entries)
     cur = -1
@@ -284,11 +282,18 @@ def _validated_port_positions(
 ) -> List[Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]]:
     """Place one or more ports along a shared edge.
 
-    Long edges benefit from multiple parallel ports: the router sees
-    each as an independent transit slot, so per-timestep flow across a
-    long wall is not bottlenecked by a single entry point. Dense sampling
-    + contiguous-run grouping + corner-margin trim + along-edge spacing
-    gives (midpoint, point_i, point_j) tuples.
+    Long edges get multiple parallel ports so the router sees independent
+    transit slots instead of bottlenecking on one entry.
+
+    :param v1: edge endpoint 1.
+    :param v2: edge endpoint 2.
+    :param poly_i: cell-i polygon.
+    :param poly_j: cell-j polygon.
+    :param robot_radius: disc radius r.
+    :param checker: obstacle checker.
+    :param forbid_near_i: anchors in cell i.
+    :param forbid_near_j: anchors in cell j.
+    :return: list of (midpoint, point_i, point_j) for each placed port.
     """
     edge_len = math.hypot(v2[0] - v1[0], v2[1] - v1[1])
     if edge_len < 1e-12:
@@ -300,8 +305,6 @@ def _validated_port_positions(
         forbid_near_i=forbid_near_i, forbid_near_j=forbid_near_j,
     )
 
-    # Trim by end margin so ports never sit on an edge endpoint. Short
-    # edges still admit a centre port: cap the margin at 40% of length.
     margin = min(_PORT_EDGE_END_MARGIN_R * robot_radius, 0.4 * edge_len)
     t_margin = margin / edge_len
     k_margin_start = int(math.ceil(t_margin * (samples - 1)))
@@ -343,6 +346,7 @@ def _validated_port_positions(
 def _find_containing_cell(
         partitions: List[Partition], x: float, y: float,
 ) -> Optional[int]:
+    """Index of the first partition that contains (x, y), or None."""
     for idx, p in enumerate(partitions):
         if _point_in_polygon(p.polygon, x, y):
             return idx
@@ -356,10 +360,19 @@ def build_high_level_graph(
         robot_radius: float,
         checker=None,
 ) -> HighLevelGraph:
-    """Build the high-level cell graph for routing.
+    """Build the cell-adjacency graph used by the router.
 
-    checker is an optional ObjectCollisionDetection used to validate
-    port points against the arc-exact inflated obstacles.
+    Nodes are validated boundary ports plus per-robot starts and goals.
+    Edges connect every pair of nodes incident to the same cell, carrying
+    cell_id / capacity / cost.
+
+    :param partitions: cells from the grid decomposition.
+    :param robot_starts: per-robot start positions.
+    :param robot_goals: per-robot goal positions.
+    :param robot_radius: disc radius r.
+    :param checker: optional ObjectCollisionDetection for arc-exact
+        validation against inflated obstacles.
+    :return: populated HighLevelGraph.
     """
     G = nx.Graph()
     node_positions: Dict[str, Tuple[float, float]] = {}
@@ -370,10 +383,10 @@ def build_high_level_graph(
         i: {} for i in range(len(partitions))
     }
 
-    # Already-placed port points per cell. Two ports on different shared
-    # edges of the same cell may not land within min_port_point_sep_sq of
-    # each other, otherwise the joint PRM's 2r pairwise separation at
-    # cell corners breaks.
+    # Per-cell list of port points already placed. Used to reject a new
+    # port whose inset on this side lands within
+    # _MIN_CROSS_EDGE_PORT_POINT_SEP_R of an existing one (would break
+    # joint-PRM 2r separation at cell corners).
     per_cell_port_points: Dict[int, List[Tuple[float, float]]] = {
         i: [] for i in range(len(partitions))
     }
@@ -387,10 +400,9 @@ def build_high_level_graph(
                 return True
         return False
 
-    # Starts/goals that sit exactly on a shared edge are registered
-    # against every containing cell: polygon containment is
-    # boundary-inclusive, and without this a port on the other cell's
-    # side would be unaware of the anchor.
+    # Anchors keep ports clear of robot starts/goals. Boundary-inclusive
+    # containment means a start exactly on a shared edge gets registered
+    # in both cells.
     cell_anchors: Dict[int, List[Tuple[float, float]]] = {
         i: [] for i in range(len(partitions))
     }
@@ -460,9 +472,6 @@ def build_high_level_graph(
                     cost=math.hypot(ax - bx, ay - by),
                 )
 
-    # Group nodes that share a rounded position. Used by router conflict
-    # checks so start_i and goal_j at the same physical point are
-    # treated as one reservation slot.
     pos_to_nodes: Dict[Tuple[float, float], List[str]] = {}
     for n, pos in node_positions.items():
         key = (round(pos[0], 6), round(pos[1], 6))
@@ -488,8 +497,7 @@ def estimate_time_horizon(
         congestion_factor: float = 2.0,
         min_horizon: int = 10,
 ) -> int:
-    """Time horizon as congestion_factor * max unweighted start->goal hop count,
-    floored at min_horizon."""
+    """congestion_factor * (max start->goal hop count), floored at min_horizon."""
     max_hops = 0
     for r in hlg.start_cells:
         src = f"start_{r}"

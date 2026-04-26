@@ -1,11 +1,3 @@
-"""Free-space cell with density (HLG edge capacity) and complexity
-(shape-difficulty factor used to scale the joint-PRM sample count).
-
-    density    = max(1, floor(area / (pi * (2r)^2)))
-    complexity = 1 / q,   q = 4 * pi * area / perimeter^2
-                          (q = 1 for a circle)
-"""
-
 import math
 from dataclasses import dataclass
 
@@ -14,6 +6,13 @@ from discopygal.bindings import Pol2
 
 @dataclass
 class Partition:
+    """One cell of the free-space decomposition.
+
+    density is the disc-packing lower bound `max(1, floor(area / (pi*(2r)^2)))`
+    and is also used as the HLG edge capacity. complexity is `1/q` for the
+    isoperimetric quotient `q = 4*pi*area/perimeter^2` (q=1 for a circle,
+    smaller for thinner / arc-carved shapes).
+    """
     polygon: Pol2.Polygon_2
     robot_radius: float = 0.5
     density: int = 0
@@ -27,6 +26,8 @@ class Partition:
         self.complexity = self._compute_complexity(area)
 
     def update_density(self, new_density: int) -> None:
+        """Override the auto-computed density (used by the topological cap
+        and the density-retry loop)."""
         self.density = new_density
 
     def _compute_complexity(self, area: float) -> float:

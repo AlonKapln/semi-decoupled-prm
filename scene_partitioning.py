@@ -1,6 +1,3 @@
-"""Partition the Minkowski-inflated free space with a regular grid
-overlay, emitting one Partition per free face."""
-
 import math
 from typing import List, Tuple
 
@@ -21,11 +18,12 @@ from free_space_builder import FREE, construct_free_space
 
 
 def _face_to_polygon(face) -> Pol2.Polygon_2:
-    """Walk the outer CCB of a free face into a Polygon_2.
+    """Walk a free face's outer CCB into a Polygon_2.
 
-    CGAL coordinates live in an extended type (a0 + a1 * sqrt(gamma));
-    projecting via a0() yields a rational subset of the true face.
-    Safe (never claims blocked area as free).
+    CGAL coordinates are stored in an extended type (a0 + a1*sqrt(gamma));
+    projecting via a0() drops the algebraic part and gives a rational
+    subset of the true face. Safe: the result is always a strict
+    interior of the face, never claims blocked area as free.
     """
     poly = Pol2.Polygon_2()
     for halfedge in face.outer_ccb():
@@ -41,9 +39,17 @@ def _refine_with_grid(
         robot_radius: float,
         max_cell_density: int,
 ) -> Arrangement_2:
-    """Overlay axis-aligned grid cuts so every resulting cell has area
-    at most max_cell_density * pi * (2r)^2. Spacing is floored at 4r so
-    r-margin sampling stays feasible."""
+    """Overlay an axis-aligned grid on `arr`.
+
+    Grid spacing is `sqrt(max_cell_density * pi * (2r)^2)` so a square
+    grid cell has area `max_cell_density * pi * (2r)^2`, floored at 4r
+    so cells stay wide enough for boundary sampling.
+
+    :param arr: free-space arrangement.
+    :param robot_radius: disc radius r.
+    :param max_cell_density: target max disc-packing density per cell.
+    :return: arrangement with grid cuts overlaid.
+    """
     x_vals = []
     y_vals = []
     for v in arr.vertices():
@@ -100,11 +106,19 @@ def partition_free_space_grid(
         eps: float = 1e-4,
         max_cell_density: int = 100,
 ) -> Tuple[List[Partition], Arrangement_2]:
-    """Free-space grid partition: Minkowski-inflated arrangement overlaid
-    with an axis-aligned grid, one Partition per free face. Cells are
-    not guaranteed convex (arc notches along inflated obstacles); the
-    downstream pipeline handles this with point-in-polygon + the
-    scene-level collision checker."""
+    """Build the Minkowski-inflated free-space arrangement, overlay an
+    axis-aligned grid, and emit one Partition per free face.
+
+    Cells are not guaranteed convex: inflated-obstacle arcs carve notches
+    into cells that touch them. Downstream code handles this via
+    point-in-polygon + the scene-level obstacle checker.
+
+    :param scene: discopygal scene.
+    :param robot_radius: disc radius r.
+    :param eps: tolerance for the Minkowski offset.
+    :param max_cell_density: drives grid spacing.
+    :return: (partitions, arrangement).
+    """
     arrangement = construct_free_space(scene, robot_radius=robot_radius, eps=eps)
     arrangement = _refine_with_grid(arrangement, robot_radius, max_cell_density)
 

@@ -1,10 +1,3 @@
-"""Minkowski-inflated free-space arrangement for disc robots.
-
-Every polygonal obstacle is inflated by r via Ms2.approximated_offset_2
-and merged into a single CGAL Arrangement_2 whose faces are tagged
-FREE / BLOCKED.
-"""
-
 from discopygal.bindings import (
     Arrangement_2,
     Aos2,
@@ -21,8 +14,8 @@ BLOCKED = 1
 
 
 def _tree_overlay(arrs, traits) -> Arrangement_2:
-    """Balanced pairwise merge of arrangements (log n depth instead of
-    the left-fold's quadratic accumulator)."""
+    """Balanced pairwise merge of arrangements: log n depth vs. the
+    quadratic left-fold accumulator."""
     assert arrs, "_tree_overlay needs at least one arrangement"
     while len(arrs) > 1:
         merged = [
@@ -40,8 +33,19 @@ def construct_free_space(
     robot_radius: float,
     eps: float = 1e-4,
 ) -> Arrangement_2:
-    """Arrangement whose face data is FREE (0) for traversable area or
-    BLOCKED (1) for inflated obstacles / outside the bounding box."""
+    """Build the Minkowski-inflated free-space arrangement.
+
+    Each obstacle is inflated by the robot radius (CGAL's approximated
+    offset), the per-obstacle arrangements are merged, and the result is
+    overlaid with the scene bounding box. Each face's data is FREE (0)
+    for traversable area or BLOCKED (1) for inflated obstacles / outside
+    the box.
+
+    :param scene: discopygal scene.
+    :param robot_radius: disc radius r.
+    :param eps: tolerance passed to approximated_offset_2.
+    :return: arrangement with FREE/BLOCKED face data.
+    """
     traits = Arr_overlay_function_traits(lambda x, y: x + y)
 
     arrangements = []
@@ -56,7 +60,7 @@ def construct_free_space(
 
         ubf = arr.unbounded_face()
         ubf.set_data(FREE)
-        # The face just inside the outer boundary is the inflated obstacle.
+        # Face just inside the outer boundary is the inflated obstacle.
         invalid_face = next(next(ubf.inner_ccbs())).twin().face()
         invalid_face.set_data(BLOCKED)
         for ccb in invalid_face.inner_ccbs():
@@ -65,15 +69,14 @@ def construct_free_space(
 
         arrangements.append(arr)
 
-    # Seed the zero-obstacle case with a single FREE arrangement so the
-    # bounding-box overlay below has something to merge against.
     if not arrangements:
+        # No obstacles: seed a FREE-everywhere arrangement so the
+        # bounding-box overlay has something to merge against.
         empty = Arrangement_2()
         empty.unbounded_face().set_data(FREE)
         arrangements.append(empty)
     arr = _tree_overlay(arrangements, traits)
 
-    # Bounding box: inside FREE, unbounded BLOCKED.
     min_x, max_x, min_y, max_y = bounding_boxes.calc_scene_bounding_box(scene)
 
     bounding_box_arr = Arrangement_2()

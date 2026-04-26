@@ -1,12 +1,3 @@
-"""Draw cells, ports, and robots for a scene.
-
-CLI: python visualize_cells.py scenes/tight_rooms.json [--density N]
-     saves to visualizations/<scene>_d<density>.png by default.
-
-Library: draw_cells(scene, partitions, hlg, robot_radius, save_path=...)
-is called by the pPRM solver after every decomposition build.
-"""
-
 import argparse
 import os
 import subprocess
@@ -30,26 +21,25 @@ REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUTPUT_DIR = os.path.join(REPO_ROOT, "visualizations")
 
 
-# ---------------------------------------------------------------------------
-# Geometry helpers
-# ---------------------------------------------------------------------------
-
 def _poly_xy(poly):
+    """(xs, ys) lists of polygon vertex coordinates."""
     xs = [v.x().to_double() for v in poly.vertices()]
     ys = [v.y().to_double() for v in poly.vertices()]
     return xs, ys
 
 
 def _obstacle_xy(obs):
-    poly = obs.poly
-    return _poly_xy(poly)
+    """(xs, ys) of an ObstaclePolygon's outline."""
+    return _poly_xy(obs.poly)
 
 
 def _centroid(xs, ys):
+    """Mean of xs, mean of ys."""
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
 def _bounds(scene):
+    """Padded scene bounding box across obstacles, starts, and goals."""
     xs, ys = [], []
     for o in scene.obstacles:
         ox, oy = _obstacle_xy(o)
@@ -66,11 +56,8 @@ def _bounds(scene):
     return min(xs) - pad, max(xs) + pad, min(ys) - pad, max(ys) + pad
 
 
-# ---------------------------------------------------------------------------
-# Plot
-# ---------------------------------------------------------------------------
-
 def _draw_cells_layer(ax, partitions, show_cell_ids: bool) -> None:
+    """Filled cell polygons + optional id/density labels."""
     cell_patches = []
     cell_colors = []
     cmap = plt.get_cmap("tab20")
@@ -93,6 +80,8 @@ def _draw_cells_layer(ax, partitions, show_cell_ids: bool) -> None:
 
 
 def _draw_ports_layer(ax, hlg: HighLevelGraph) -> None:
+    """One dot per port point, plus a thin line connecting the two
+    points of each port pair."""
     port_points: dict = {}
     for ci, port_map in hlg.cell_boundary_ports.items():
         for port_id, (x, y) in port_map.items():
@@ -109,6 +98,7 @@ def _draw_ports_layer(ax, hlg: HighLevelGraph) -> None:
 
 
 def _draw_robots_layer(ax, robots, robot_radius: float) -> None:
+    """Green disc at each start, red square at each goal, dotted line between."""
     for ri, r in enumerate(robots):
         sx = r.start.x().to_double()
         sy = r.start.y().to_double()
@@ -149,9 +139,23 @@ def draw_cells(
     show_interactive: bool = False,
     verbose: bool = False,
 ) -> str | None:
-    """Render the decomposition and save a PNG. Returns the saved path
-    (or None). With no save_path, writes a timestamped PNG under
-    visualizations/."""
+    """Render the decomposition and save a PNG.
+
+    :param scene: discopygal scene.
+    :param partitions: cells.
+    :param hlg: high-level graph.
+    :param robot_radius: disc radius r.
+    :param save_path: target PNG path, or None for a timestamped default
+        under visualizations/.
+    :param title: figure title, or None for an auto-generated one.
+    :param show_ports: draw port points.
+    :param show_cell_ids: label each cell with its id and density.
+    :param show_robots: draw start/goal markers.
+    :param show_interactive: try to open the saved PNG with the platform
+        viewer (Agg backend can't pop a matplotlib window directly).
+    :param verbose: print the saved-to path.
+    :return: the saved path.
+    """
     num_ports = sum(len(p) for p in hlg.cell_boundary_ports.values()) // 2
 
     fig, ax = plt.subplots(figsize=(12, 10))
@@ -209,7 +213,6 @@ def draw_cells(
         print(f"saved to {out}")
     plt.close(fig)
 
-    # Agg cannot pop a window; --show best-effort opens the PNG.
     if show_interactive:
         try:
             if sys.platform == "darwin":
@@ -233,6 +236,16 @@ def visualize(
     save_path: str | None = None,
     show_interactive: bool = False,
 ) -> None:
+    """Run the decomposition + HLG build for a scene file and render a PNG.
+
+    :param scene_path: path to a discopygal scene JSON.
+    :param density: max_cell_density for the partitioner.
+    :param show_ports: see draw_cells.
+    :param show_cell_ids: see draw_cells.
+    :param show_robots: see draw_cells.
+    :param save_path: target PNG path; auto-generated if None.
+    :param show_interactive: open the PNG with the platform viewer.
+    """
     scene = Scene.from_file(scene_path)
     robots = scene.robots
     if not robots:
@@ -284,7 +297,9 @@ def visualize(
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(
+        description="Draw cells, ports, and robots for a Discopygal scene."
+    )
     p.add_argument("scene", help="Path to a Discopygal scene JSON")
     p.add_argument(
         "--density", type=int, default=100,
@@ -295,14 +310,11 @@ def main(argv=None) -> int:
     p.add_argument("--no-robots", action="store_true", help="Hide start/goal")
     p.add_argument(
         "--save", metavar="PATH",
-        help=(
-            "Save PNG to PATH. Default: visualizations/<scene>_cells.png "
-            "inside the repo."
-        ),
+        help="Save PNG to PATH (default: visualizations/<scene>_d<density>.png)",
     )
     p.add_argument(
         "--show", action="store_true",
-        help="Open an interactive window instead of saving.",
+        help="Open the saved PNG with the platform viewer",
     )
     args = p.parse_args(argv)
 

@@ -1,9 +1,3 @@
-"""Prioritized space-time A* on the high-level graph (Silver's
-Cooperative A*, 2005). Robots are planned longest-first against a
-shared reservation table that enforces vertex, swap, and per-cell
-capacity conflicts. Returns None if any robot is unroutable.
-"""
-
 import heapq
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -21,11 +15,21 @@ def solve_prioritized(
         time_horizon: int,
         verbose: bool = False,
 ) -> Optional[RoutingSolution]:
+    """Cooperative A* (Silver, 2005): plan robots one at a time in
+    decreasing start->goal distance, each against a shared reservation
+    table.
+
+    :param hlg: high-level graph.
+    :param num_robots: number of robots in the scene.
+    :param time_horizon: max number of timesteps the search may take.
+    :param verbose: log per-robot summaries.
+    :return: per-robot node sequence on success, None if any robot is
+        unroutable.
+    """
     G = hlg.graph
     capacity_by_cell = _get_capacity_by_cell(hlg)
     node_to_cells = _build_node_to_cells(hlg)
 
-    # Priority order: plan the longest start-to-goal path first.
     priorities: List[Tuple[int, int]] = []
     for r in range(num_robots):
         try:
@@ -75,12 +79,8 @@ def solve_prioritized(
     return solution
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _build_node_to_cells(hlg: HighLevelGraph) -> Dict[str, List[int]]:
-    """Invert cell_incident_nodes -> {node: [cell_indices]}."""
+    """Invert cell_incident_nodes: {node: [cell_indices]}."""
     mapping: Dict[str, List[int]] = {}
     for ci, nodes in hlg.cell_incident_nodes.items():
         for n in nodes:
@@ -89,7 +89,7 @@ def _build_node_to_cells(hlg: HighLevelGraph) -> Dict[str, List[int]]:
 
 
 def _get_capacity_by_cell(hlg: HighLevelGraph) -> Dict[int, int]:
-    """Cell index -> density, read from edge attributes."""
+    """{cell_id: density} read from edge attributes."""
     capacity_by_cell: Dict[int, int] = {}
     for _, _, data in hlg.graph.edges(data=True):
         capacity_by_cell[data["cell_id"]] = data["capacity"]
@@ -104,8 +104,8 @@ def _capacity_ok(
         densities: Dict[int, int],
         hlg: HighLevelGraph,
 ) -> bool:
-    """True iff placing one more robot at (node, time) fits every incident
-    cell's capacity."""
+    """True iff placing one more robot at (node, time) fits every
+    incident cell's capacity."""
     for ci in node_to_cells.get(node, []):
         cap = densities.get(ci)
         if cap is None:
@@ -126,9 +126,9 @@ def _swap_conflict(
         reservation: Dict[str, Dict[int, Set[int]]],
         hlg: HighLevelGraph,
 ) -> bool:
-    """True iff from_node -> to_node at `time` collides with a robot going
-    the other way. Uses node_equivalence so swaps between geometrically
-    coincident names (e.g. start_i == goal_j) are caught."""
+    """True iff from_node -> to_node at `time` collides with a robot
+    moving the other way. Uses node_equivalence so swaps between
+    geometrically coincident names (e.g. start_i == goal_j) are caught."""
     equiv = hlg.node_equivalence
     robots_at_to = set()
     for n in equiv.get(to_node, [to_node]):
@@ -151,11 +151,20 @@ def _astar_time_expanded(
         densities: Dict[int, int],
         hlg: HighLevelGraph,
 ) -> Optional[List[str]]:
-    """A* on (node, time) with vertex/swap/capacity conflicts.
-
-    Edge cost is the Euclidean `cost` attribute; the heuristic is
-    Dijkstra-to-goal on the untimed graph (admissible because realised
+    """A* on (node, time) under vertex / swap / per-cell-capacity
+    conflicts. Heuristic is Dijkstra-to-goal on the untimed graph using
+    the Euclidean `cost` edge attribute (admissible because realised
     segments are never shorter than the straight-line distance).
+
+    :param G: HLG networkx graph.
+    :param start: start node name.
+    :param goal: goal node name.
+    :param T: time horizon.
+    :param reservation: shared reservation table from already-planned robots.
+    :param node_to_cells: node -> list of incident cell ids.
+    :param densities: cell_id -> capacity.
+    :param hlg: HLG (for node_equivalence and incident-node lookups).
+    :return: time-indexed node sequence of length T+1, or None.
     """
     try:
         dist_to_goal = nx.single_source_dijkstra_path_length(
@@ -170,8 +179,9 @@ def _astar_time_expanded(
     ]
     visited: Set[Tuple[str, int]] = set()
     came_from: Dict[Tuple[str, int], Tuple[str, int]] = {}
-    # First-push came_from would record a suboptimal predecessor under
-    # a consistent heuristic; overwrite on any strictly-improving push.
+    # came_from must reflect the strictly-improving predecessor; using
+    # first-push would record a suboptimal predecessor under a consistent
+    # heuristic.
     g_score: Dict[Tuple[str, int], float] = {(start, 0): 0.0}
 
     while pq:
@@ -208,7 +218,6 @@ def _astar_time_expanded(
             ):
                 continue
 
-            # Vertex conflict (position-equivalent nodes count).
             if any(
                     reservation.get(en, {}).get(next_time, set())
                     for en in hlg.node_equivalence.get(next_node, [next_node])

@@ -1,9 +1,3 @@
-"""Benchmark pPRMSolver against discopygal's own solvers. Each
-(scene, solver) pair runs in a fresh spawn subprocess for timeout and
-crash isolation, and verify_paths validates the output. One CSV row
-per run.
-"""
-
 import argparse
 import csv
 import json
@@ -20,6 +14,8 @@ _SAMPLE_CAP = 15_000
 
 
 def _scale(n_robots: int, base: int, cap: int = _SAMPLE_CAP) -> int:
+    """Sample-budget scaling: super-linear in robot count (joint config
+    space dimension is 2n) and capped to avoid blowing up runtime."""
     n = max(1, n_robots)
     return int(min(cap, base * (1 + (n - 1) ** 2)))
 
@@ -118,10 +114,6 @@ SOLVERS: Dict[str, Callable[[int], Any]] = {
     "ExactSingle": _make_exact_single,
 }
 
-# ---------------------------------------------------------------------------
-# Scene discovery
-# ---------------------------------------------------------------------------
-
 # Ordered so the benchmark progresses from cheap/easy to expensive/hard.
 _DEFAULT_SCENE_ORDER = [
     "single_robot_empty",
@@ -145,6 +137,7 @@ _DEFAULT_SCENE_ORDER = [
 
 
 def discover_scenes(selected: Optional[List[str]]) -> List[str]:
+    """Resolve `selected` (basenames) or list scenes/ in benchmark order."""
     available = {
         os.path.splitext(f)[0]: os.path.join(SCENES_DIR, f)
         for f in os.listdir(SCENES_DIR)
@@ -162,13 +155,12 @@ def discover_scenes(selected: Optional[List[str]]) -> List[str]:
     return known + leftover
 
 
-# ---------------------------------------------------------------------------
-# Subprocess worker
-# ---------------------------------------------------------------------------
-
 def _child(
         scene_path: str, solver_name: str, out_path: str, n_robots: int,
 ) -> None:
+    """Run one (scene, solver) trial in a child process and write the
+    result dict to out_path as JSON. Catches every exception so the
+    parent always sees a result file."""
     result: Dict[str, Any] = {}
     try:
         from discopygal.solvers_infra import Scene
@@ -225,6 +217,14 @@ def _child(
 def run_one(
         scene_path: str, solver_name: str, timeout: float, n_robots: int,
 ) -> Dict[str, Any]:
+    """Spawn _child for one (scene, solver) trial with a wall-clock cap.
+
+    :param scene_path: scene JSON path.
+    :param solver_name: key into SOLVERS.
+    :param timeout: seconds before the child is killed.
+    :param n_robots: scene's robot count, used for sample scaling.
+    :return: result dict with status / elapsed / paths / verify_ok / notes.
+    """
     tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
     tmp.close()
     ctx = mp.get_context("spawn")
@@ -262,6 +262,7 @@ def run_one(
 
 
 def scene_metadata(path: str) -> Dict[str, int]:
+    """{'num_robots', 'num_obstacles'} from the scene JSON."""
     with open(path) as f:
         d = json.load(f)
     return {
@@ -278,7 +279,9 @@ CSV_FIELDS = [
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(
+        description="Benchmark pPRMSolver vs discopygal solvers on the scenes/ suite.",
+    )
     ap.add_argument("--timeout", type=float, default=300.0,
                     help="Per-run wall-clock cap in seconds (default: 300)")
     ap.add_argument("--out", default="benchmark_results.csv",
