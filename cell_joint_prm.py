@@ -9,13 +9,11 @@ check.
 
 import math
 import random
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import networkx as nx
 
 from CGALPY.CGALPY import Bounded_side
-
 from discopygal.bindings import FT, Pol2, Point_2, Segment_2
 
 from partition import Partition
@@ -25,27 +23,8 @@ from partition import Partition
 # Canonical order: (transit_0, ..., transit_{n-1}, holder_0, ..., holder_{m-1}).
 JointConfig = Tuple[Tuple[float, float], ...]
 
-# Interpolation steps for the polygon-containment sweep in
-# _steer_collision_free. Cell polygons are synthetic grid cuts, so a
-# steer between two cell-interior endpoints can exit the polygon
-# through a non-convex notch even when both endpoints are inside; the
-# obstacle checker is unaware of cell boundaries.
-_STEER_SWEEP_STEPS = 10
-
 # Per-robot rejection-sampling budget for _sample_joint_config.
 _SAMPLE_TRIES = 200
-
-
-@dataclass
-class AdhocResult:
-    """graph is None on failure; reason is one of entry_infeasible,
-    exit_infeasible (endpoint bad, resampling won't help), no_path, or
-    sampling_failed (more samples may help)."""
-
-    graph: Optional[nx.Graph]
-    entry_cfg: JointConfig
-    exit_cfg: JointConfig
-    reason: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +42,9 @@ def _point_inside_polygon(poly: Pol2.Polygon_2, x: float, y: float) -> bool:
     return side != Bounded_side.ON_UNBOUNDED_SIDE
 
 
-def _pairwise_separated(points: List[Tuple[float, float]], min_dist_sq: float) -> bool:
+def _pairwise_separated(
+    points: Sequence[Tuple[float, float]], min_dist_sq: float,
+) -> bool:
     for i in range(len(points)):
         xi, yi = points[i]
         for j in range(i + 1, len(points)):
@@ -75,27 +56,27 @@ def _pairwise_separated(points: List[Tuple[float, float]], min_dist_sq: float) -
 
 
 def _is_valid_config(
-        cfg: JointConfig,
-        poly: Pol2.Polygon_2,
-        min_dist_sq: float,
-        checker=None,
+    cfg: JointConfig,
+    poly: Pol2.Polygon_2,
+    min_dist_sq: float,
+    checker=None,
 ) -> bool:
-    """One joint config is valid: pairwise 2r-separated, every robot
-    inside `poly`, every robot passes the obstacle checker."""
-    if not _pairwise_separated(list(cfg), min_dist_sq):
+    """Pairwise 2r-separated, every robot inside poly, every robot passes
+    the obstacle checker."""
+    if not _pairwise_separated(cfg, min_dist_sq):
         return False
     for x, y in cfg:
         if not _point_inside_polygon(poly, x, y):
             return False
         if checker is not None and not checker.is_point_valid(
-                Point_2(FT(x), FT(y))
+            Point_2(FT(x), FT(y))
         ):
             return False
     return True
 
 
 def _steer_pairwise_min_ok(
-        c1: "JointConfig", c2: "JointConfig", min_dist_sq: float,
+    c1: JointConfig, c2: JointConfig, min_dist_sq: float,
 ) -> bool:
     """Closed-form minimum of d(t)^2 over t in [0, 1] for every robot
     pair along a straight-line joint steer."""
@@ -140,32 +121,25 @@ def _config_distance(c1: JointConfig, c2: JointConfig) -> float:
 
 
 def _steer_collision_free(
-        c1: JointConfig,
-        c2: JointConfig,
-        robot_radius: float,
-        poly: Optional[Pol2.Polygon_2] = None,
-        checker=None,
+    c1: JointConfig,
+    c2: JointConfig,
+    robot_radius: float,
+    checker=None,
 ) -> bool:
-    """Straight-line joint steer: exact pairwise separation, optional
-    polygon containment (non-convex grid cells), and scene-level
-    swept-disc validation via checker (arc-vs-chord gap)."""
+    """Straight-line joint steer: exact pairwise separation + scene-level
+    swept-disc validation against obstacles.
+
+    No explicit cell-containment check: the only thing that ever makes a
+    cell non-convex is obstacle carving, so any segment leaving the cell
+    must enter an obstacle, which the checker rejects. If the
+    decomposition ever stops being grid-then-Minkowski-carved this
+    assumption needs revisiting.
+    """
     min_sq = (2.0 * robot_radius) ** 2
-    k = len(c1)
     if not _steer_pairwise_min_ok(c1, c2, min_sq):
         return False
-    # Polygon containment is needed for non-convex cells: two endpoints
-    # inside the polygon can be connected by a chord that exits through
-    # a notch. Discretised; the checker below is independent.
-    if poly is not None:
-        for s in range(_STEER_SWEEP_STEPS + 1):
-            t = s / _STEER_SWEEP_STEPS
-            for i in range(k):
-                x = c1[i][0] + t * (c2[i][0] - c1[i][0])
-                y = c1[i][1] + t * (c2[i][1] - c1[i][1])
-                if not _point_inside_polygon(poly, x, y):
-                    return False
     if checker is not None:
-        for i in range(k):
+        for i in range(len(c1)):
             # Skip degenerate zero-length segments (pinned holders) to
             # avoid CGAL degenerate-segment asserts.
             if c1[i] == c2[i]:
@@ -184,22 +158,18 @@ def _steer_collision_free(
 # ---------------------------------------------------------------------------
 
 def _sample_joint_config(
-        poly: Pol2.Polygon_2,
-        n_transit: int,
-        holders: List[Tuple[float, float]],
-        robot_radius: float,
-        rng: random.Random,
-        checker=None,
+    poly: Pol2.Polygon_2,
+    n_transit: int,
+    holders: List[Tuple[float, float]],
+    robot_radius: float,
+    rng: random.Random,
+    checker=None,
 ) -> Optional[JointConfig]:
-    """Place n_transit robots inside `poly`, pairwise 2r-separated from
-    each other AND from `holders`. Returns canonical (transits...,
-    holders...) order, or None if placement budget is exhausted."""
-    n_pinned = len(holders)
-    if n_transit + n_pinned == 0:
-        return ()
-
+    """Place n_transit robots inside poly, pairwise 2r-separated from
+    each other AND from holders. Returns canonical (transits..., holders...)
+    order, or None if placement budget is exhausted."""
     min_sq = (2.0 * robot_radius) ** 2
-    if not _pairwise_separated(list(holders), min_sq):
+    if not _pairwise_separated(holders, min_sq):
         return None
 
     minx, maxx, miny, maxy = _polygon_bbox(poly)
@@ -222,8 +192,8 @@ def _sample_joint_config(
                 for hx, hy in holders
             ):
                 continue
-            # Arc-exact check for non-convex cells: the polygon chord-
-            # approximates inflated-obstacle boundaries.
+            # Arc-exact check: the polygon chord-approximates inflated-
+            # obstacle boundaries.
             if checker is not None and not checker.is_point_valid(
                 Point_2(FT(x), FT(y))
             ):
@@ -242,23 +212,21 @@ def _sample_joint_config(
 
 def build_adhoc_roadmap(
     partition: Partition,
-    entry_positions: List[Tuple[float, float]],
-    exit_positions: List[Tuple[float, float]],
-    pinned_positions: List[Tuple[float, float]],
+    entry_cfg: JointConfig,
+    exit_cfg: JointConfig,
+    n_transit: int,
     robot_radius: float,
     num_samples: int = 15,
     k_nearest: int = 6,
     rng: Optional[random.Random] = None,
     checker=None,
-) -> AdhocResult:
-    """Single-timestep joint PRM for one cell.
+) -> Optional[nx.Graph]:
+    """Single-timestep joint k-robot PRM for one cell.
 
     Slot layout: (transit_0, ..., transit_{n-1}, holder_0, ..., holder_{m-1}).
-    Entry/exit configs are inserted as explicit nodes; holders are pinned
-    at every node. When entry_cfg == exit_cfg, the returned graph is a
-    single-node trivial roadmap and the caller short-circuits with that
-    config as a one-waypoint path. On failure the returned graph is None
-    and reason names the failure mode.
+    entry_cfg / exit_cfg share their holder slots (i.e. entry_cfg[n_transit:]
+    must equal exit_cfg[n_transit:]). Returns the roadmap graph or None
+    if either endpoint is infeasible.
     """
     if rng is None:
         rng = random.Random()
@@ -266,41 +234,25 @@ def build_adhoc_roadmap(
     poly = partition.polygon
     r = robot_radius
     min_sq = (2.0 * r) ** 2
-    n_transit = len(entry_positions)
-    n_pinned = len(pinned_positions)
-    k = n_transit + n_pinned
+    pinned_positions: List[Tuple[float, float]] = list(entry_cfg[n_transit:])
 
-    entry_cfg: JointConfig = tuple(
-        list(entry_positions) + list(pinned_positions)
-    )
-    exit_cfg: JointConfig = tuple(
-        list(exit_positions) + list(pinned_positions)
-    )
-
-    if len(exit_positions) != n_transit or k == 0:
-        return AdhocResult(None, entry_cfg, exit_cfg, reason="entry_infeasible")
-
-    # Validate entry/exit endpoints.
-    for cfg, tag in ((entry_cfg, "entry_infeasible"),
-                     (exit_cfg, "exit_infeasible")):
+    for cfg in (entry_cfg, exit_cfg):
         if not _is_valid_config(cfg, poly, min_sq, checker=None):
-            return AdhocResult(None, entry_cfg, exit_cfg, reason=tag)
+            return None
 
     graph = nx.Graph()
     samples: List[JointConfig] = []
 
-    # Anchors used by bridge-burst sampling AND anchor brute-force connection.
     anchors = [entry_cfg] if exit_cfg == entry_cfg else [entry_cfg, exit_cfg]
-
     for a in anchors:
         graph.add_node(a)
         samples.append(a)
 
-    # Random interior samples with holders pinned. Output is already in
-    # canonical (transits..., holders...) order.
+    # Random interior samples with holders pinned. Already in canonical
+    # (transits..., holders...) order.
     for _ in range(num_samples):
         cfg = _sample_joint_config(
-            poly, n_transit, list(pinned_positions),
+            poly, n_transit, pinned_positions,
             r, rng, checker=checker,
         )
         if cfg is None or cfg in graph:
@@ -308,18 +260,18 @@ def build_adhoc_roadmap(
         graph.add_node(cfg)
         samples.append(cfg)
 
-    # Anchor-local bridge samples: seed a burst around every transit
-    # slot of every anchor so k-NN can thread the anchor through a
-    # local chain when random sampling misses the narrow strip.
+    # Anchor-local bridge samples: a burst around every transit slot of
+    # every anchor so k-NN can thread the anchor through a local chain
+    # when uniform sampling misses a narrow strip.
     bridge_burst = max(10, num_samples // 2)
-    bridge_radius = max(3.0 * r, 0.4)
+    bridge_radius = 3.0 * r
     for anchor in anchors:
         for slot in range(n_transit):
             ax, ay = anchor[slot]
             for _ in range(bridge_burst):
                 bx = ax + rng.uniform(-bridge_radius, bridge_radius)
                 by = ay + rng.uniform(-bridge_radius, bridge_radius)
-                # Only the perturbed slot is new; anchor's other slots
+                # Only the perturbed slot is new; the anchor's other slots
                 # were validated as entry_cfg/exit_cfg already.
                 if not _point_inside_polygon(poly, bx, by):
                     continue
@@ -331,7 +283,7 @@ def build_adhoc_roadmap(
                 trial[slot] = (bx, by)
                 trial.extend(anchor[n_transit:])
                 cfg = tuple(trial)
-                if not _pairwise_separated(list(cfg), min_sq):
+                if not _pairwise_separated(cfg, min_sq):
                     continue
                 if cfg in graph:
                     continue
@@ -352,7 +304,7 @@ def build_adhoc_roadmap(
             cj = samples[j]
             if graph.has_edge(ci, cj):
                 continue
-            if _steer_collision_free(ci, cj, r, poly=poly, checker=checker):
+            if _steer_collision_free(ci, cj, r, checker=checker):
                 graph.add_edge(ci, cj, weight=distance)
 
     # Anchor brute-force: try every straight-line steer from each anchor.
@@ -361,12 +313,60 @@ def build_adhoc_roadmap(
         for other in samples:
             if other is anchor or graph.has_edge(anchor, other):
                 continue
-            if _steer_collision_free(anchor, other, r, poly=poly, checker=checker):
+            if _steer_collision_free(anchor, other, r, checker=checker):
                 graph.add_edge(
                     anchor, other, weight=_config_distance(anchor, other),
                 )
 
-    if len(samples) <= len(anchors):
-        return AdhocResult(graph, entry_cfg, exit_cfg, reason="sampling_failed")
+    return graph
 
-    return AdhocResult(graph, entry_cfg, exit_cfg, reason=None)
+
+def plan_adhoc(
+    partition: Partition,
+    transit_entries: List[Tuple[float, float]],
+    transit_exits: List[Tuple[float, float]],
+    pinned: List[Tuple[float, float]],
+    robot_radius: float,
+    num_samples: int,
+    k_nearest: int = 6,
+    rng: Optional[random.Random] = None,
+    checker=None,
+) -> Optional[List[JointConfig]]:
+    """Build an ad-hoc roadmap with sample escalation (1x/2x/4x/8x) and
+    return a joint-config path entry -> exit, or None if no attempt
+    finds one. The same rng is reused across attempts so successive
+    escalations sample fresh.
+    """
+    if rng is None:
+        rng = random.Random()
+
+    n_transit = len(transit_entries)
+    if len(transit_exits) != n_transit or n_transit + len(pinned) == 0:
+        return None
+
+    entry_cfg: JointConfig = tuple(transit_entries) + tuple(pinned)
+    exit_cfg: JointConfig = tuple(transit_exits) + tuple(pinned)
+
+    # Trivial path: nobody needs to move this timestep.
+    if entry_cfg == exit_cfg:
+        return [entry_cfg]
+
+    for nsamples in (num_samples, num_samples * 2, num_samples * 4, num_samples * 8):
+        graph = build_adhoc_roadmap(
+            partition,
+            entry_cfg=entry_cfg,
+            exit_cfg=exit_cfg,
+            n_transit=n_transit,
+            robot_radius=robot_radius,
+            num_samples=nsamples,
+            k_nearest=k_nearest,
+            rng=rng,
+            checker=checker,
+        )
+        if graph is None:
+            continue
+        try:
+            return nx.shortest_path(graph, entry_cfg, exit_cfg, weight="weight")
+        except nx.NetworkXNoPath:
+            continue
+    return None
