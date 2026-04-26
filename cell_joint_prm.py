@@ -20,11 +20,19 @@ from discopygal.bindings import FT, Pol2, Point_2, Segment_2
 
 from partition import Partition
 
-
 # A joint configuration is a tuple of (x, y) tuples, one per robot slot.
+# Canonical order: (transit_0, ..., transit_{n-1}, holder_0, ..., holder_{m-1}).
 JointConfig = Tuple[Tuple[float, float], ...]
 
-DEFAULT_STEER_STEPS = 10
+# Interpolation steps for the polygon-containment sweep in
+# _steer_collision_free. Cell polygons are synthetic grid cuts, so a
+# steer between two cell-interior endpoints can exit the polygon
+# through a non-convex notch even when both endpoints are inside; the
+# obstacle checker is unaware of cell boundaries.
+_STEER_SWEEP_STEPS = 10
+
+# Per-robot rejection-sampling budget for _sample_joint_config.
+_SAMPLE_TRIES = 200
 
 
 @dataclass
@@ -66,8 +74,28 @@ def _pairwise_separated(points: List[Tuple[float, float]], min_dist_sq: float) -
     return True
 
 
+def _is_valid_config(
+        cfg: JointConfig,
+        poly: Pol2.Polygon_2,
+        min_dist_sq: float,
+        checker=None,
+) -> bool:
+    """One joint config is valid: pairwise 2r-separated, every robot
+    inside `poly`, every robot passes the obstacle checker."""
+    if not _pairwise_separated(list(cfg), min_dist_sq):
+        return False
+    for x, y in cfg:
+        if not _point_inside_polygon(poly, x, y):
+            return False
+        if checker is not None and not checker.is_point_valid(
+                Point_2(FT(x), FT(y))
+        ):
+            return False
+    return True
+
+
 def _steer_pairwise_min_ok(
-    c1: "JointConfig", c2: "JointConfig", min_dist_sq: float,
+        c1: "JointConfig", c2: "JointConfig", min_dist_sq: float,
 ) -> bool:
     """Closed-form minimum of d(t)^2 over t in [0, 1] for every robot
     pair along a straight-line joint steer."""
@@ -105,24 +133,6 @@ def _steer_pairwise_min_ok(
     return True
 
 
-def _min_edge_distance(poly: Pol2.Polygon_2, x: float, y: float) -> float:
-    """Signed distance to the nearest polygon edge (positive = inside, CCW)."""
-    verts = [(v.x().to_double(), v.y().to_double()) for v in poly.vertices()]
-    n = len(verts)
-    min_d = float("inf")
-    for i in range(n):
-        ax, ay = verts[i]
-        bx, by = verts[(i + 1) % n]
-        ex, ey = bx - ax, by - ay
-        length = math.sqrt(ex * ex + ey * ey)
-        if length < 1e-12:
-            continue
-        d = (ex * (y - ay) - ey * (x - ax)) / length
-        if d < min_d:
-            min_d = d
-    return min_d
-
-
 def _config_distance(c1: JointConfig, c2: JointConfig) -> float:
     # Joint motion is rate-limited by the slowest robot, so the max
     # single-robot displacement is the natural steer cost.
@@ -130,12 +140,11 @@ def _config_distance(c1: JointConfig, c2: JointConfig) -> float:
 
 
 def _steer_collision_free(
-    c1: JointConfig,
-    c2: JointConfig,
-    robot_radius: float,
-    steps: int = DEFAULT_STEER_STEPS,
-    poly: Optional[Pol2.Polygon_2] = None,
-    checker=None,
+        c1: JointConfig,
+        c2: JointConfig,
+        robot_radius: float,
+        poly: Optional[Pol2.Polygon_2] = None,
+        checker=None,
 ) -> bool:
     """Straight-line joint steer: exact pairwise separation, optional
     polygon containment (non-convex grid cells), and scene-level
@@ -144,11 +153,12 @@ def _steer_collision_free(
     k = len(c1)
     if not _steer_pairwise_min_ok(c1, c2, min_sq):
         return False
-    # The discretised sweep is an approximation for non-convex cells;
-    # the checker below is authoritative for arc-adjacent regions.
+    # Polygon containment is needed for non-convex cells: two endpoints
+    # inside the polygon can be connected by a chord that exits through
+    # a notch. Discretised; the checker below is independent.
     if poly is not None:
-        for s in range(steps + 1):
-            t = s / steps
+        for s in range(_STEER_SWEEP_STEPS + 1):
+            t = s / _STEER_SWEEP_STEPS
             for i in range(k):
                 x = c1[i][0] + t * (c2[i][0] - c1[i][0])
                 y = c1[i][1] + t * (c2[i][1] - c1[i][1])
@@ -174,49 +184,88 @@ def _steer_collision_free(
 # ---------------------------------------------------------------------------
 
 def _sample_joint_config(
-    poly: Pol2.Polygon_2,
-    k: int,
-    robot_radius: float,
-    rng: random.Random,
-    pinned: Optional[List[Tuple[float, float]]] = None,
-    max_tries_per_robot: int = 200,
-    boundary_margin: float = 0.0,
-    checker=None,
+        poly: Pol2.Polygon_2,
+        n_transit: int,
+        holders: List[Tuple[float, float]],
+        robot_radius: float,
+        rng: random.Random,
+        checker=None,
 ) -> Optional[JointConfig]:
-    """Place k robots incrementally: inside polygon, at least boundary_margin
-    from edges, pairwise at least 2r apart. Pinned slots are fixed."""
-    if k == 0:
-        return tuple(pinned or ())
+    """Place n_transit robots inside `poly`, pairwise 2r-separated from
+    each other AND from `holders`. Returns canonical (transits...,
+    holders...) order, or None if placement budget is exhausted."""
+    n_pinned = len(holders)
+    if n_transit + n_pinned == 0:
+        return ()
 
     min_sq = (2.0 * robot_radius) ** 2
-    minx, maxx, miny, maxy = _polygon_bbox(poly)
-    points: List[Tuple[float, float]] = list(pinned or [])
-    if not _pairwise_separated(points, min_sq):
+    if not _pairwise_separated(list(holders), min_sq):
         return None
 
-    while len(points) < k:
+    minx, maxx, miny, maxy = _polygon_bbox(poly)
+    transits: List[Tuple[float, float]] = []
+
+    while len(transits) < n_transit:
         placed = False
-        for _ in range(max_tries_per_robot):
+        for _ in range(_SAMPLE_TRIES):
             x = rng.uniform(minx, maxx)
             y = rng.uniform(miny, maxy)
             if not _point_inside_polygon(poly, x, y):
                 continue
-            if boundary_margin > 0 and _min_edge_distance(poly, x, y) < boundary_margin:
+            if not all(
+                    (x - tx) ** 2 + (y - ty) ** 2 >= min_sq
+                    for tx, ty in transits
+            ):
                 continue
-            if not all((x - px) ** 2 + (y - py) ** 2 >= min_sq for px, py in points):
+            if not all(
+                    (x - hx) ** 2 + (y - hy) ** 2 >= min_sq
+                    for hx, hy in holders
+            ):
                 continue
             # Arc-exact check for non-convex cells: the polygon chord-
             # approximates inflated-obstacle boundaries.
             if checker is not None and not checker.is_point_valid(
-                Point_2(FT(x), FT(y))
+                    Point_2(FT(x), FT(y))
             ):
                 continue
-            points.append((x, y))
+            transits.append((x, y))
             placed = True
             break
         if not placed:
             return None
-    return tuple(points)
+    return tuple(transits) + tuple(holders)
+
+
+# ---------------------------------------------------------------------------
+# Cache replay
+# ---------------------------------------------------------------------------
+
+def _revalidate_cached(
+        cfg: JointConfig,
+        n_transit: int,
+        rounded_pinned: Tuple[Tuple[float, float], ...],
+        poly: Pol2.Polygon_2,
+        min_dist_sq: float,
+        checker,
+        graph: nx.Graph,
+) -> Optional[JointConfig]:
+    """Return cfg if it survives every cache-replay check, else None.
+
+    Checks: slot-count match, holder-slots match the rounded pinned
+    set, not already in graph, _is_valid_config under current cell and
+    checker state.
+    """
+    if len(cfg) != n_transit + len(rounded_pinned):
+        return None
+    if rounded_pinned and tuple(
+            (round(x, 6), round(y, 6)) for x, y in cfg[n_transit:]
+    ) != rounded_pinned:
+        return None
+    if cfg in graph:
+        return None
+    if not _is_valid_config(cfg, poly, min_dist_sq, checker):
+        return None
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -224,24 +273,25 @@ def _sample_joint_config(
 # ---------------------------------------------------------------------------
 
 def build_adhoc_roadmap(
-    partition: Partition,
-    entry_positions: List[Tuple[float, float]],
-    exit_positions: List[Tuple[float, float]],
-    pinned_positions: List[Tuple[float, float]],
-    robot_radius: float,
-    num_samples: int = 15,
-    k_nearest: int = 6,
-    steer_steps: int = DEFAULT_STEER_STEPS,
-    rng: Optional[random.Random] = None,
-    checker=None,
-    reuse_samples: Optional[List[JointConfig]] = None,
+        partition: Partition,
+        entry_positions: List[Tuple[float, float]],
+        exit_positions: List[Tuple[float, float]],
+        pinned_positions: List[Tuple[float, float]],
+        robot_radius: float,
+        num_samples: int = 15,
+        k_nearest: int = 6,
+        rng: Optional[random.Random] = None,
+        checker=None,
+        reuse_samples: Optional[List[JointConfig]] = None,
 ) -> AdhocResult:
     """Single-timestep joint PRM for one cell.
 
     Slot layout: (transit_0, ..., transit_{n-1}, holder_0, ..., holder_{m-1}).
     Entry/exit configs are inserted as explicit nodes; holders are pinned
-    at every node. On failure the returned graph is None and reason names
-    the failure mode.
+    at every node. When entry_cfg == exit_cfg, the returned graph is a
+    single-node trivial roadmap and the caller short-circuits with that
+    config as a one-waypoint path. On failure the returned graph is None
+    and reason names the failure mode.
     """
     if rng is None:
         rng = random.Random()
@@ -263,89 +313,49 @@ def build_adhoc_roadmap(
     if len(exit_positions) != n_transit or k == 0:
         return AdhocResult(None, entry_cfg, exit_cfg, reason="entry_infeasible")
 
-    # Validate entry/exit: inside cell + pairwise 2r separation.
+    # Validate entry/exit endpoints.
     for cfg, tag in ((entry_cfg, "entry_infeasible"),
                      (exit_cfg, "exit_infeasible")):
-        if not _pairwise_separated(list(cfg), min_sq):
+        if not _is_valid_config(cfg, poly, min_sq, checker=None):
             return AdhocResult(None, entry_cfg, exit_cfg, reason=tag)
-        for x, y in cfg:
-            if not _point_inside_polygon(poly, x, y):
-                return AdhocResult(None, entry_cfg, exit_cfg, reason=tag)
-
-    # Narrow-cell margin fallback: try r-margin sampling first, fall
-    # back to 0 if even a single-robot r-margin probe fails.
-    margin = r
-    probe = _sample_joint_config(
-        poly, 1, r, rng, boundary_margin=margin, max_tries_per_robot=50,
-        checker=checker,
-    )
-    if probe is None:
-        margin = 0.0
 
     graph = nx.Graph()
     samples: List[JointConfig] = []
     interior_samples: List[JointConfig] = []
 
-    graph.add_node(entry_cfg)
-    samples.append(entry_cfg)
-    if exit_cfg != entry_cfg:
-        graph.add_node(exit_cfg)
-        samples.append(exit_cfg)
+    # Anchors used by bridge-burst sampling AND anchor brute-force connection.
+    anchors = [entry_cfg] if exit_cfg == entry_cfg else [entry_cfg, exit_cfg]
+
+    for a in anchors:
+        graph.add_node(a)
+        samples.append(a)
 
     # Reused samples from the solver's cache; each must be re-validated
     # because density retries and checker state can invalidate a
-    # previously-good sample.
+    # previously-good sample. Holder slots are matched on rounded
+    # coords so sub-precision drift between timesteps does not silently
+    # reject every reused sample.
     if reuse_samples:
         rounded_pinned = tuple(
             (round(x, 6), round(y, 6)) for x, y in pinned_positions
         )
         for cfg in reuse_samples:
-            if len(cfg) != k:
-                continue
-            # Holder slots must match pinned; round both sides to the
-            # same 6dp as the cache key so sub-precision drift does not
-            # silently reject every reused sample.
-            if n_pinned > 0 and tuple(
-                (round(x, 6), round(y, 6)) for x, y in cfg[n_transit:]
-            ) != rounded_pinned:
-                continue
-            if cfg in graph:
-                continue
-            if not _pairwise_separated(list(cfg), min_sq):
-                continue
-            bad = False
-            for x, y in cfg:
-                if not _point_inside_polygon(poly, x, y):
-                    bad = True
-                    break
-                if checker is not None and not checker.is_point_valid(
-                    Point_2(FT(x), FT(y))
-                ):
-                    bad = True
-                    break
-            if bad:
+            if _revalidate_cached(
+                    cfg, n_transit, rounded_pinned, poly, min_sq, checker, graph,
+            ) is None:
                 continue
             graph.add_node(cfg)
             samples.append(cfg)
             interior_samples.append(cfg)
 
-    # Random interior samples with holders pinned.
-    pinned_arg = list(pinned_positions) if n_pinned > 0 else None
+    # Random interior samples with holders pinned. Output is already in
+    # canonical (transits..., holders...) order.
     for _ in range(num_samples):
-        raw = _sample_joint_config(
-            poly, k, r, rng,
-            pinned=pinned_arg,
-            boundary_margin=margin,
-            checker=checker,
+        cfg = _sample_joint_config(
+            poly, n_transit, list(pinned_positions),
+            r, rng, checker=checker,
         )
-        if raw is None:
-            continue
-        # Reorder sampler output (pinned, transits) -> (transits, holders).
-        if n_pinned > 0:
-            cfg = tuple(list(raw[n_pinned:]) + list(raw[:n_pinned]))
-        else:
-            cfg = raw
-        if cfg in graph:
+        if cfg is None or cfg in graph:
             continue
         graph.add_node(cfg)
         samples.append(cfg)
@@ -354,19 +364,22 @@ def build_adhoc_roadmap(
     # Anchor-local bridge samples: seed a burst around every transit
     # slot of every anchor so k-NN can thread the anchor through a
     # local chain when random sampling misses the narrow strip.
+    # Excluded from interior_samples on purpose so the cross-call cache
+    # stays dominated by pure-random configs.
     bridge_burst = max(10, num_samples // 2)
     bridge_radius = max(3.0 * r, 0.4)
-    anchor_list = [entry_cfg] if exit_cfg == entry_cfg else [entry_cfg, exit_cfg]
-    for anchor in anchor_list:
+    for anchor in anchors:
         for slot in range(n_transit):
             ax, ay = anchor[slot]
             for _ in range(bridge_burst):
                 bx = ax + rng.uniform(-bridge_radius, bridge_radius)
                 by = ay + rng.uniform(-bridge_radius, bridge_radius)
+                # Only the perturbed slot is new; anchor's other slots
+                # were validated as entry_cfg/exit_cfg already.
                 if not _point_inside_polygon(poly, bx, by):
                     continue
                 if checker is not None and not checker.is_point_valid(
-                    Point_2(FT(bx), FT(by))
+                        Point_2(FT(bx), FT(by))
                 ):
                     continue
                 trial = list(anchor[:n_transit])
@@ -394,28 +407,22 @@ def build_adhoc_roadmap(
             cj = samples[j]
             if graph.has_edge(ci, cj):
                 continue
-            if _steer_collision_free(
-                ci, cj, r, steer_steps, poly=poly, checker=checker,
-            ):
+            if _steer_collision_free(ci, cj, r, poly=poly, checker=checker):
                 graph.add_edge(ci, cj, weight=distance)
 
     # Anchor brute-force: try every straight-line steer from each anchor.
-    # Cheap at this sample size and recovers paths k-NN misses at corners.
-    anchors = [entry_cfg]
-    if exit_cfg != entry_cfg:
-        anchors.append(exit_cfg)
+    # Cheap at this sample size and recovers paths k-NN misses at corners -
+    # This in face causes our solver to only use the sampled map when we need to go around an obstacle or holding robot.
     for anchor in anchors:
         for other in samples:
             if other is anchor or graph.has_edge(anchor, other):
                 continue
-            if _steer_collision_free(
-                anchor, other, r, steer_steps, poly=poly, checker=checker,
-            ):
+            if _steer_collision_free(anchor, other, r, poly=poly, checker=checker):
                 graph.add_edge(
                     anchor, other, weight=_config_distance(anchor, other),
                 )
 
-    if len(samples) <= (2 if entry_cfg != exit_cfg else 1):
+    if len(samples) <= len(anchors):
         return AdhocResult(
             graph, entry_cfg, exit_cfg,
             interior_samples=interior_samples,

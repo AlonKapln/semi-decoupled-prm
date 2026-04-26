@@ -10,7 +10,6 @@ import math
 import os
 import random
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
@@ -33,23 +32,25 @@ from scene_partitioning import partition_free_space_grid
 from visualize_cells import draw_cells
 
 
-@dataclass
-class RealisationFailure:
-    cell_id: int
-    timestep: int
-    transit_robots: List[int]
-    holders: List[int]
-    reason: str
-
-
+# Raised by path realisation when an ad-hoc PRM can't realise a
+# (cell, timestep). The density-retry loop in _route_with_retries
+# reads cell_id/reason off the exception to decide what to do.
 class RealisationError(Exception):
-    def __init__(self, failure: "RealisationFailure"):
+    def __init__(self, cell_id, timestep, reason, transit_robots, holders):
         super().__init__(
-            f"realisation failed at cell={failure.cell_id}, "
-            f"t={failure.timestep}, reason={failure.reason}"
+            f"cell={cell_id} t={timestep} reason={reason} "
+            f"transits={transit_robots} holders={holders}"
         )
-        self.failure = failure
+        self.cell_id = cell_id
+        self.timestep = timestep
+        self.reason = reason
+        self.transit_robots = transit_robots
+        self.holders = holders
 
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
 
 def _infer_scene_stem(scene) -> str:
     """Stable visualisation filename stem: source-path basename if set,
@@ -96,17 +97,29 @@ def _node_position_in_cell(
     return hlg.node_positions.get(node_name)
 
 
+def _total_ports(hlg: HighLevelGraph) -> int:
+    """Each port appears in two cells' boundary maps; total is half the sum."""
+    return sum(len(p) for p in hlg.cell_boundary_ports.values()) // 2
+
+
+# ---------------------------------------------------------------------------
+# Solver
+# ---------------------------------------------------------------------------
+
 class pPRMSolver(Solver):
     """Partitioned-PRM multi-robot solver.
 
-    num_samples     PRM samples per cell.
-    k_nearest       PRM neighbour connections per sample.
-    time_horizon    Router time horizon; None = auto-compute.
-    prm_seed        RNG seed for reproducible PRM sampling.
-    max_cell_density
-                    Upper bound on per-cell density used by grid refinement.
-                    Lower values split large regions into more cells.
+    num_samples       PRM samples per cell.
+    k_nearest         PRM neighbour connections per sample.
+    time_horizon      Router time horizon; 0 or None auto-computes.
+    prm_seed          RNG seed for reproducible PRM sampling. None uses 0.
+    max_cell_density  Upper bound on per-cell density used by grid refinement.
+                      Lower values split large regions into more cells.
     """
+
+    # ------------------------------------------------------------------
+    # Construction / Solver-API
+    # ------------------------------------------------------------------
 
     def __init__(
         self,
@@ -126,6 +139,7 @@ class pPRMSolver(Solver):
 
         self._arrangement = None
         self._hlg = None
+        self._collision_checker = None
 
         # (cell_id, n_transit, frozenset of rounded pinned positions) ->
         # interior joint configs accepted by the most recent adhoc roadmap
@@ -153,10 +167,19 @@ class pPRMSolver(Solver):
             "num_samples": ("PRM samples per cell:", 50, int),
             "k_nearest": ("PRM k-nearest neighbours:", 8, int),
             "time_horizon": ("Router time horizon (0=auto):", 0, int),
-            "prm_seed": ("PRM RNG seed (0=random):", 0, int),
+            "prm_seed": ("PRM RNG seed:", 0, int),
             "max_cell_density": ("Max cell density (grid refinement):", 100, int),
             **super().get_arguments(),
         }
+
+    def _log(self, msg: str) -> None:
+        if not getattr(self, "verbose", False):
+            return
+        writer = getattr(self, "writer", None)
+        if writer:
+            print(msg, file=writer)
+        else:
+            print(msg)
 
     # ------------------------------------------------------------------
     # Main pipeline
@@ -167,75 +190,116 @@ class pPRMSolver(Solver):
         robots = scene.robots
         num_robots = len(robots)
         robot_radius = robots[0].radius.to_double()  # homogeneous radii
-        verbose = getattr(self, "verbose", False)
-        writer = getattr(self, "writer", None)
         self._sample_cache = {}
 
-        def log(msg: str) -> None:
-            if verbose and writer:
-                print(msg, file=writer)
-            elif verbose:
-                print(msg)
-
-        log("Step 1-3: building free space and grid decomposition...")
+        # Step 1: Minkowski-inflated free space + grid decomposition.
+        self._log("Building free space and grid decomposition...")
         partitions, arrangement = partition_free_space_grid(
             scene, robot_radius, max_cell_density=self.max_cell_density,
         )
         self._arrangement = arrangement
-        log(f"  {len(partitions)} cells")
+        self._log(f"  {len(partitions)} cells")
 
         # Arc-exact obstacle checker. The polygonal cell approximation
         # chord-approximates inflated-obstacle arcs, so for curved faces
         # the checker overrides the polygon containment test.
-        if len(scene.obstacles) > 0:
-            self._collision_checker = ObjectCollisionDetection(
-                scene.obstacles, robots[0],
-            )
-        else:
-            self._collision_checker = None
+        self._collision_checker = (
+            ObjectCollisionDetection(scene.obstacles, robots[0])
+            if scene.obstacles else None
+        )
 
-        log("Step 5: building high-level graph...")
+        # Step 2: high-level graph.
+        self._log("Building high-level graph...")
+        hlg = self._build_hlg(robots, partitions, robot_radius)
+        self._hlg = hlg
+        num_ports = _total_ports(hlg)
+        self._log(
+            f"  V={hlg.graph.number_of_nodes()} "
+            f"E={hlg.graph.number_of_edges()} ports={num_ports}"
+        )
+
+        for r in range(num_robots):
+            if r not in hlg.start_cells or r not in hlg.goal_cells:
+                self._log(f"  Robot {r} start/goal outside free space!")
+                return PathCollection()
+
+        # Step 3: cap densities by topology + sync to HLG edge capacities.
+        # The router reads capacity from edge attributes, so the cap must
+        # be propagated to every HLG edge, not just the partitions list.
+        self._cap_densities_by_topology(hlg, partitions)
+        self._sync_edge_capacities(hlg, partitions)
+
+        self._save_snapshot(scene, partitions, hlg, robot_radius, num_ports)
+
+        # Step 4: routing + realisation, with density-retry on failure.
+        return self._route_with_retries(hlg, partitions, robots, robot_radius)
+
+    def _build_hlg(
+        self,
+        robots,
+        partitions: List[Partition],
+        robot_radius: float,
+    ) -> HighLevelGraph:
         robot_starts = [
             (r.start.x().to_double(), r.start.y().to_double()) for r in robots
         ]
         robot_goals = [
             (r.end.x().to_double(), r.end.y().to_double()) for r in robots
         ]
-
-        hlg = build_high_level_graph(
+        return build_high_level_graph(
             partitions, robot_starts, robot_goals, robot_radius,
             checker=self._collision_checker,
         )
-        self._hlg = hlg
-        log(
-            f"  V={hlg.graph.number_of_nodes()} "
-            f"E={hlg.graph.number_of_edges()} "
-            f"ports={sum(len(p) for p in hlg.cell_boundary_ports.values()) // 2}"
-        )
 
-        for r in range(num_robots):
-            if r not in hlg.start_cells or r not in hlg.goal_cells:
-                log(f"  Robot {r} start/goal outside free space!")
-                return PathCollection()
+    def _cap_densities_by_topology(
+        self,
+        hlg: HighLevelGraph,
+        partitions: List[Partition],
+    ) -> None:
+        """Cap each cell's density by its incident-node count.
 
-        # Cap each cell's density by (port_count, start_count, goal_count, 1).
-        # A cell with n ports admits at most n simultaneous transits; cells
-        # containing starts/goals need room for those robots.
+        Every robot occupies exactly one HLG node at any timestep, so a
+        cell's simultaneous-occupancy upper bound is the number of nodes
+        incident to it (ports on its shared edges plus any starts/goals
+        inside it). Disc-packing density may be much higher than that for
+        large open cells, but the router can't exploit area without
+        nodes to reserve.
+        """
         for ci, partition in enumerate(partitions):
-            num_ports = len(hlg.cell_boundary_ports.get(ci, {}))
-            num_starts = sum(
-                1 for ri in range(num_robots) if hlg.start_cells.get(ri) == ci
-            )
-            num_goals = sum(
-                1 for ri in range(num_robots) if hlg.goal_cells.get(ri) == ci
-            )
-            port_cap = max(num_ports, num_starts, num_goals, 1)
-            new_density = min(partition.density, port_cap)
+            node_cap = max(1, len(hlg.cell_incident_nodes.get(ci, [])))
+            new_density = min(partition.density, node_cap)
             if new_density != partition.density:
-                log(f"  cell {ci}: density {partition.density} -> {new_density} (ports={num_ports})")
+                self._log(
+                    f"  cell {ci}: density {partition.density} -> {new_density} "
+                    f"(incident nodes={node_cap})"
+                )
                 partition.update_density(new_density)
 
-        # Best-effort snapshot of the decomposition.
+    @staticmethod
+    def _sync_edge_capacities(
+        hlg: HighLevelGraph,
+        partitions: List[Partition],
+        cell_id: Optional[int] = None,
+    ) -> None:
+        """Push partition.density into HLG edge attributes. If cell_id is
+        given, only that cell's edges; otherwise every edge."""
+        for _u, _v, data in hlg.graph.edges(data=True):
+            ci = data.get("cell_id")
+            if ci is None:
+                continue
+            if cell_id is not None and ci != cell_id:
+                continue
+            data["capacity"] = partitions[ci].density
+
+    def _save_snapshot(
+        self,
+        scene,
+        partitions: List[Partition],
+        hlg: HighLevelGraph,
+        robot_radius: float,
+        num_ports: int,
+    ) -> None:
+        """Best-effort cell-decomposition PNG dump."""
         try:
             stem = _infer_scene_stem(scene)
             save_path = os.path.join(
@@ -245,64 +309,67 @@ class pPRMSolver(Solver):
             )
             title = (
                 f"{stem}, density={self.max_cell_density}, "
-                f"{len(partitions)} cells, "
-                f"{sum(len(p) for p in hlg.cell_boundary_ports.values()) // 2} ports, "
-                f"{num_robots} robots"
+                f"{len(partitions)} cells, {num_ports} ports, "
+                f"{len(scene.robots)} robots"
             )
             out = draw_cells(
                 scene, partitions, hlg, robot_radius,
                 save_path=save_path, title=title,
             )
             if out is not None:
-                log(f"  cell snapshot -> {out}")
+                self._log(f"  cell snapshot -> {out}")
         except Exception as exc:
-            log(f"  cell snapshot skipped: {exc}")
+            self._log(f"  cell snapshot skipped: {exc}")
 
-        # Routing + realisation with density-retry on realisation failure.
-        # On failure we halve the offending cell's density (halving rather
-        # than decrementing converges in ceil(log2(d)) attempts) and re-run
-        # the router.
+    def _route_with_retries(
+        self,
+        hlg: HighLevelGraph,
+        partitions: List[Partition],
+        robots,
+        robot_radius: float,
+    ) -> PathCollection:
+        """Run the router and realisation; on realisation failure halve the
+        offending cell's density (converges in ceil(log2(d)) attempts) and
+        re-run. Cap at MAX_DENSITY_RETRIES extra attempts."""
+        MAX_DENSITY_RETRIES = 3
         T = self.time_horizon or estimate_time_horizon(hlg)
-        max_retries = 3
+        num_robots = len(robots)
+        verbose = getattr(self, "verbose", False)
 
-        for attempt in range(max_retries + 1):
-            log(f"Step 6: prioritized routing (T={T}, attempt={attempt})...")
+        for attempt in range(MAX_DENSITY_RETRIES + 1):
+            self._log(f"Routing (T={T}, attempt={attempt})...")
             routing_sol = solve_prioritized(
                 hlg, num_robots, T, verbose=verbose,
             )
             if routing_sol is None:
-                log("  Prioritized router found no solution")
+                self._log("  Prioritized router found no solution")
                 return PathCollection()
 
-            log("Steps 7-8: realising geometric paths...")
+            self._log("Realising geometric paths...")
             try:
                 return self._realise_paths(
-                    routing_sol, hlg, partitions, robots, robot_radius, log,
+                    routing_sol, hlg, partitions, robots, robot_radius,
                 )
             except RealisationError as exc:
-                failure = exc.failure
-
-            part = partitions[failure.cell_id]
-            if part.density <= 1:
-                log(
-                    f"  cell {failure.cell_id} already at density 1 and "
-                    f"still failing (reason={failure.reason}, "
-                    f"t={failure.timestep}, "
-                    f"transits={failure.transit_robots}). Bailing."
+                part = partitions[exc.cell_id]
+                if part.density <= 1:
+                    self._log(
+                        f"  cell {exc.cell_id} already at density 1 and "
+                        f"still failing (reason={exc.reason}, "
+                        f"t={exc.timestep}, "
+                        f"transits={exc.transit_robots}). Bailing."
+                    )
+                    return PathCollection()
+                new_density = max(1, part.density // 2)
+                self._log(
+                    f"  density retry: cell {exc.cell_id} "
+                    f"{part.density} -> {new_density} "
+                    f"(reason={exc.reason}, t={exc.timestep})"
                 )
-                return PathCollection()
-            new_density = max(1, part.density // 2)
-            log(
-                f"  density retry: cell {failure.cell_id} "
-                f"{part.density} -> {new_density} "
-                f"(reason={failure.reason}, t={failure.timestep})"
-            )
-            part.update_density(new_density)
-            for u, v, data in hlg.graph.edges(data=True):
-                if data.get("cell_id") == failure.cell_id:
-                    data["capacity"] = new_density
+                part.update_density(new_density)
+                self._sync_edge_capacities(hlg, partitions, cell_id=exc.cell_id)
 
-        log(f"  Exhausted {max_retries} density retries. Bailing.")
+        self._log(f"  Exhausted {MAX_DENSITY_RETRIES} density retries. Bailing.")
         return PathCollection()
 
     # ------------------------------------------------------------------
@@ -316,10 +383,10 @@ class pPRMSolver(Solver):
         partitions: List[Partition],
         robots,
         robot_radius: float,
-        log,
     ) -> PathCollection:
         num_robots = len(robots)
         T = len(routing_sol[0])
+        seed_base = self.prm_seed if self.prm_seed is not None else 0
 
         # Current geometric position per robot. At a cell boundary this
         # differs from the next timestep's computed entry; the gap is
@@ -337,12 +404,10 @@ class pPRMSolver(Solver):
             r: [] for r in range(num_robots)
         }
 
-        seed_base = self.prm_seed if self.prm_seed is not None else 0
-
         for t in range(T - 1):
             timestep_segments = self._realise_timestep(
                 t, routing_sol, hlg, partitions, current_pos, robot_radius,
-                seed_base, log,
+                seed_base,
             )
 
             # Pad every robot's segment to the same length so the flattened
@@ -394,7 +459,7 @@ class pPRMSolver(Solver):
             ]
             pc.add_robot_path(robot, Path(points))
 
-        log(f"  {num_robots} paths, {max_len} waypoints each")
+        self._log(f"  {num_robots} paths, {max_len} waypoints each")
         return pc
 
     def _realise_timestep(
@@ -406,7 +471,6 @@ class pPRMSolver(Solver):
         current_pos: Dict[int, Tuple[float, float]],
         robot_radius: float,
         seed_base: int,
-        log,
     ) -> Dict[int, List[Tuple[float, float]]]:
         """Plan one router timestep. Raises RealisationError on PRM failure
         so the caller can retry with a lower cell density."""
@@ -417,7 +481,6 @@ class pPRMSolver(Solver):
             list,
         )
         holding: List[int] = []
-
         for r in range(num_robots):
             src = routing_sol[r][t]
             dst = routing_sol[r][t + 1]
@@ -435,70 +498,88 @@ class pPRMSolver(Solver):
                     cell_holding[ci].append(r)
                     break
 
+        # Holders' segments are trivial single-point lists.
         timestep_segments: Dict[int, List[Tuple[float, float]]] = {
             r: [current_pos[r]] for r in holding
         }
 
+        # For each cell with active transits, build the joint roadmap and
+        # extract per-robot waypoint lists from the resulting joint path.
         for cell_id, transitions in cell_transitions.items():
-            partition = partitions[cell_id]
-            holders_here = cell_holding.get(cell_id, [])
-
-            transit_entries: List[Tuple[float, float]] = []
-            transit_exits: List[Tuple[float, float]] = []
-            for _r, src, dst in transitions:
-                entry = _node_position_in_cell(hlg, cell_id, src)
-                ex = _node_position_in_cell(hlg, cell_id, dst)
-                if entry is None or ex is None:
-                    transit_robots = [rr for rr, _, _ in transitions]
-                    log(
-                        f"  ad-hoc PRM: missing node position at t={t}, "
-                        f"cell={cell_id}"
-                    )
-                    raise RealisationError(RealisationFailure(
-                        cell_id=cell_id,
-                        timestep=t,
-                        transit_robots=transit_robots,
-                        holders=list(holders_here),
-                        reason="missing_node_position",
-                    ))
-                transit_entries.append(entry)
-                transit_exits.append(ex)
-
-            pinned = [current_pos[r] for r in holders_here]
-
-            base_samples = self._effective_num_samples(partition)
-            cfg_path, reason = self._plan_adhoc(
-                partition, transit_entries, transit_exits, pinned,
-                robot_radius, seed_base, cell_id, t,
-                base_samples=base_samples,
+            self._plan_cell_timestep(
+                t, cell_id, transitions,
+                cell_holding.get(cell_id, []),
+                hlg, partitions[cell_id], current_pos, robot_radius,
+                seed_base, timestep_segments,
             )
-            if cfg_path is None:
-                transit_robots = [rr for rr, _, _ in transitions]
-                log(
-                    f"  ad-hoc PRM failed at t={t}, cell={cell_id}, "
-                    f"transits={transit_robots}, holders={holders_here}, "
-                    f"reason={reason}"
-                )
-                raise RealisationError(RealisationFailure(
-                    cell_id=cell_id,
-                    timestep=t,
-                    transit_robots=transit_robots,
-                    holders=list(holders_here),
-                    reason=reason or "unknown",
-                ))
-
-            n_transit = len(transitions)
-            for slot, (r, _src, _dst) in enumerate(transitions):
-                timestep_segments[r] = [
-                    (cfg[slot][0], cfg[slot][1]) for cfg in cfg_path
-                ]
-            for j, r in enumerate(holders_here):
-                slot = n_transit + j
-                timestep_segments[r] = [
-                    (cfg[slot][0], cfg[slot][1]) for cfg in cfg_path
-                ]
 
         return timestep_segments
+
+    def _plan_cell_timestep(
+        self,
+        t: int,
+        cell_id: int,
+        transitions: List[Tuple[int, str, str]],
+        holders_here: List[int],
+        hlg: HighLevelGraph,
+        partition: Partition,
+        current_pos: Dict[int, Tuple[float, float]],
+        robot_radius: float,
+        seed_base: int,
+        timestep_segments: Dict[int, List[Tuple[float, float]]],
+    ) -> None:
+        """Plan one cell at one timestep; mutate timestep_segments in place."""
+        transit_robots = [r for r, _, _ in transitions]
+
+        transit_entries: List[Tuple[float, float]] = []
+        transit_exits: List[Tuple[float, float]] = []
+        for _r, src, dst in transitions:
+            entry = _node_position_in_cell(hlg, cell_id, src)
+            ex = _node_position_in_cell(hlg, cell_id, dst)
+            if entry is None or ex is None:
+                self._log(
+                    f"  ad-hoc PRM: missing node position at t={t}, "
+                    f"cell={cell_id}"
+                )
+                raise RealisationError(
+                    cell_id=cell_id, timestep=t,
+                    reason="missing_node_position",
+                    transit_robots=transit_robots,
+                    holders=list(holders_here),
+                )
+            transit_entries.append(entry)
+            transit_exits.append(ex)
+
+        pinned = [current_pos[r] for r in holders_here]
+        base_samples = self._effective_num_samples(partition)
+        cfg_path, reason = self._plan_adhoc(
+            partition, transit_entries, transit_exits, pinned,
+            robot_radius, seed_base, cell_id, t,
+            base_samples=base_samples,
+        )
+        if cfg_path is None:
+            self._log(
+                f"  ad-hoc PRM failed at t={t}, cell={cell_id}, "
+                f"transits={transit_robots}, holders={holders_here}, "
+                f"reason={reason}"
+            )
+            raise RealisationError(
+                cell_id=cell_id, timestep=t,
+                reason=reason or "unknown",
+                transit_robots=transit_robots,
+                holders=list(holders_here),
+            )
+
+        n_transit = len(transitions)
+        for slot, (r, _src, _dst) in enumerate(transitions):
+            timestep_segments[r] = [
+                (cfg[slot][0], cfg[slot][1]) for cfg in cfg_path
+            ]
+        for j, r in enumerate(holders_here):
+            slot = n_transit + j
+            timestep_segments[r] = [
+                (cfg[slot][0], cfg[slot][1]) for cfg in cfg_path
+            ]
 
     # ------------------------------------------------------------------
     # Ad-hoc PRM helpers
@@ -526,9 +607,7 @@ class pPRMSolver(Solver):
         endpoints short-circuit; the caller handles them with a density retry."""
         seed = hash(
             (
-                seed_base,
-                cell_id,
-                t,
+                seed_base, cell_id, t,
                 tuple(transit_entries),
                 tuple(transit_exits),
                 tuple(pinned),
@@ -582,4 +661,3 @@ class pPRMSolver(Solver):
                 last_reason = "no_path"
                 continue
         return None, last_reason
-
