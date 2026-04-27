@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 import networkx as nx
 
 from CGALPY.CGALPY import Bounded_side
-from discopygal.bindings import FT, Point_2, Pol2
+from discopygal.bindings import FT, Point_2, Pol2, Segment_2
 
 from partition import Partition
 
@@ -132,11 +132,14 @@ def _has_2r_escape(
         robot_radius: float,
         checker,
         n_dirs: int = 8,
-        n_steps: int = 5,
 ) -> bool:
     """True iff some direction admits a 2r straight line from (x, y)
     that stays inside the polygon and clear of obstacles. Distinguishes
     dead-end pockets from narrow but traversable slivers.
+
+    Endpoint containment is checked against the polygon, and edge
+    clearance against the CGAL swept-disc obstacle checker (exact for
+    inflated arcs).
 
     :param x: query x.
     :param y: query y.
@@ -144,28 +147,20 @@ def _has_2r_escape(
     :param robot_radius: disc radius r.
     :param checker: obstacle checker, or None.
     :param n_dirs: directions tested (uniform on [0, 2pi)).
-    :param n_steps: discretisation per ray.
     """
     d = 2.0 * robot_radius
+    src = Point_2(FT(x), FT(y))
     for k in range(n_dirs):
         angle = 2.0 * math.pi * k / n_dirs
-        dx = math.cos(angle) * d
-        dy = math.sin(angle) * d
-        ok = True
-        for s in range(1, n_steps + 1):
-            t = s / n_steps
-            px = x + t * dx
-            py = y + t * dy
-            if not _point_in_polygon(poly, px, py):
-                ok = False
-                break
-            if checker is not None and not checker.is_point_valid(
-                    Point_2(FT(px), FT(py)),
-            ):
-                ok = False
-                break
-        if ok:
-            return True
+        ex = x + d * math.cos(angle)
+        ey = y + d * math.sin(angle)
+        if not _point_in_polygon(poly, ex, ey):
+            continue
+        if checker is not None and not checker.is_edge_valid(
+                Segment_2(src, Point_2(FT(ex), FT(ey))),
+        ):
+            continue
+        return True
     return False
 
 
