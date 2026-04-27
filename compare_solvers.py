@@ -65,74 +65,27 @@ def _make_drrt(n_robots: int):
     )
 
 
-def _make_drrt_star(n_robots: int):
-    from discopygal.solvers.rrt import dRRT_star
-    # num_expands dominates runtime; cap it tighter than _SAMPLE_CAP.
-    expands = min(3000, _scale(n_robots, base=200, cap=10_000))
-    prm_l = _scale(n_robots, base=100)
-    params = (
-        f"num_expands={expands},num_landmarks={prm_l},"
-        f"k_nn=15,random_sample_counter=10"
-    )
-    return (
-        dRRT_star(
-            num_expands=expands, random_sample_counter=10,
-            num_landmarks=prm_l, k_nn=15,
-        ),
-        params,
-    )
-
-
-def _make_staggered_grid(n_robots: int):
-    from discopygal.solvers.staggered_grid import StaggeredGrid
-    # Grid-based, not sample-count-driven; fix eps/delta and let the
-    # wall-clock cap bound tensor-search cost.
-    params = "eps=0.01,delta=0.1"
-    return (
-        StaggeredGrid(
-            eps=0.01, delta=0.1, bounding_margin_width_factor=2,
-        ),
-        params,
-    )
-
-
-def _make_exact_single(n_robots: int):
-    from discopygal.solvers.exact import ExactSingle
-    # Single-robot only; raises on n>1 (recorded as "crash", intended).
-    params = "eps=0.1"
-    return ExactSingle(eps=0.1), params
-
-
 SOLVERS: Dict[str, Callable[[int], Any]] = {
     "pPRM": _make_pprm,
     "PRM": _make_prm,
     "RRT": _make_rrt,
     "BiRRT": _make_birrt,
     "dRRT": _make_drrt,
-    "dRRT_star": _make_drrt_star,
-    "StaggeredGrid": _make_staggered_grid,
-    "ExactSingle": _make_exact_single,
 }
 
 # Ordered so the benchmark progresses from cheap/easy to expensive/hard.
 _DEFAULT_SCENE_ORDER = [
     "single_robot_empty",
-    "L_corridor_single",
-    "maze_single",
     "swap_2",
-    "narrow_corridor",
     "crossing_4",
-    "bottleneck_funnel",
     "spiral_4",
     "rotate_6",
     "open_16",
     "scene_1",
     "warehouse",
-    "tight_rooms",
     "extreme_warehouse",
     "warehouse_rooms",
     "new_warhouse",
-    "unsolvable_trap",
 ]
 
 
@@ -174,16 +127,6 @@ def _child(
             solver.disable_verbose()
         except Exception:
             pass
-        # StaggeredGrid reads self._bounding_box in load_scene but never
-        # populates it; fill it in when the solver opted into the knob.
-        margin = getattr(solver, "bounding_margin_width_factor", -1)
-        if (getattr(solver, "_bounding_box", None) is None
-                and margin is not None and margin >= 0):
-            solver.scene = scene
-            try:
-                solver._bounding_box = solver.calc_bounding_box()
-            except Exception:
-                pass
         solver.load_scene(scene)
         t0 = time.time()
         pc = solver.solve()

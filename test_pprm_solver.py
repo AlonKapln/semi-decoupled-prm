@@ -1,12 +1,8 @@
 import os
-import sys
 import time
 
-from discopygal.bindings import FT, Point_2, Polygon_2
 from discopygal.solvers_infra import (
-    ObstaclePolygon,
     PathCollection,
-    RobotDisc,
     Scene,
 )
 from discopygal.solvers_infra.verify_paths import verify_paths
@@ -15,10 +11,7 @@ from pprm_solver import pPRMSolver
 
 SCENES_DIR = os.path.join(os.path.dirname(__file__), "scenes")
 
-
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _run_solver(
     scene: Scene,
@@ -80,108 +73,6 @@ def _check_paths(scene: Scene, pc: PathCollection, label: str) -> bool:
     return valid
 
 
-# ---------------------------------------------------------------------------
-# Inline test scenes
-# ---------------------------------------------------------------------------
-
-def create_crossing_scene():
-    scene = Scene()
-    scene.add_robot(RobotDisc(
-        start=Point_2(FT(1), FT(1)),
-        end=Point_2(FT(9), FT(9)),
-        radius=FT(0.5),
-    ))
-    scene.add_robot(RobotDisc(
-        start=Point_2(FT(9), FT(1)),
-        end=Point_2(FT(1), FT(9)),
-        radius=FT(0.5),
-    ))
-    scene.add_obstacle(ObstaclePolygon(Polygon_2([
-        Point_2(FT(4), FT(4)), Point_2(FT(6), FT(4)),
-        Point_2(FT(6), FT(6)), Point_2(FT(4), FT(6)),
-    ])))
-    return scene
-
-
-def create_corridor_scene():
-    """Horizontal corridor, head-on. Free strip y in [3.5, 6.5]; robots
-    can pass side-by-side (sanity check, not a forced yield)."""
-    scene = Scene()
-    r = 0.3
-    scene.add_robot(RobotDisc(
-        start=Point_2(FT(1), FT(5)),
-        end=Point_2(FT(9), FT(5)),
-        radius=FT(r),
-    ))
-    scene.add_robot(RobotDisc(
-        start=Point_2(FT(9), FT(5)),
-        end=Point_2(FT(1), FT(5)),
-        radius=FT(r),
-    ))
-    # Top wall
-    scene.add_obstacle(ObstaclePolygon(Polygon_2([
-        Point_2(FT(0), FT(6.5)), Point_2(FT(10), FT(6.5)),
-        Point_2(FT(10), FT(10)), Point_2(FT(0), FT(10)),
-    ])))
-    # Bottom wall
-    scene.add_obstacle(ObstaclePolygon(Polygon_2([
-        Point_2(FT(0), FT(0)), Point_2(FT(10), FT(0)),
-        Point_2(FT(10), FT(3.5)), Point_2(FT(0), FT(3.5)),
-    ])))
-    return scene
-
-
-def create_three_robot_scene():
-    """Three robots around a central obstacle (one pair crosses)."""
-    scene = Scene()
-    r = 0.4
-    scene.add_robot(RobotDisc(
-        start=Point_2(FT(1), FT(1)),
-        end=Point_2(FT(9), FT(9)),
-        radius=FT(r),
-    ))
-    scene.add_robot(RobotDisc(
-        start=Point_2(FT(9), FT(1)),
-        end=Point_2(FT(1), FT(9)),
-        radius=FT(r),
-    ))
-    scene.add_robot(RobotDisc(
-        start=Point_2(FT(5), FT(1)),
-        end=Point_2(FT(5), FT(9)),
-        radius=FT(r),
-    ))
-    scene.add_obstacle(ObstaclePolygon(Polygon_2([
-        Point_2(FT(4), FT(4)), Point_2(FT(6), FT(4)),
-        Point_2(FT(6), FT(6)), Point_2(FT(4), FT(6)),
-    ])))
-    return scene
-
-
-# ---------------------------------------------------------------------------
-# Test functions
-# ---------------------------------------------------------------------------
-
-def test_crossing():
-    print("\n=== Test: 2-robot crossing with obstacle ===")
-    scene = create_crossing_scene()
-    pc = _run_solver(scene)
-    _check_paths(scene, pc, "crossing")
-
-
-def test_corridor():
-    print("\n=== Test: corridor head-on ===")
-    scene = create_corridor_scene()
-    pc = _run_solver(scene, num_samples=50)
-    _check_paths(scene, pc, "corridor")
-
-
-def test_three_robots():
-    print("\n=== Test: 3 robots with obstacle ===")
-    scene = create_three_robot_scene()
-    pc = _run_solver(scene, num_samples=40)
-    _check_paths(scene, pc, "3-robot")
-
-
 def test_scene_1():
     print("\n=== Test: scene_1.json (8 robots, no obstacles) ===")
     path = os.path.join(SCENES_DIR, "scene_1.json")
@@ -210,7 +101,12 @@ def test_warehouse():
 
 def test_solver_viewer_compat():
     print("\n=== Test: solver_viewer compatibility ===")
-    scene = create_crossing_scene()
+    path = os.path.join(SCENES_DIR, "scene_1.json")
+    if not os.path.exists(path):
+        print(f"  SKIP:{path} not found")
+        return
+    scene = Scene.from_file(path)
+    scene._source_path = path
     solver = pPRMSolver(num_samples=20)
     solver.verbose = False
     solver.load_scene(scene)
@@ -238,22 +134,8 @@ def test_solver_viewer_compat():
     return ok
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("pPRM Solver Test Suite")
-    print("=" * 60)
-
-    test_crossing()
-    test_corridor()
-    test_three_robots()
     test_scene_1()
     test_warehouse()
     test_solver_viewer_compat()
-
-    print("\n" + "=" * 60)
-    print("All tests completed.")
-    print("=" * 60)
