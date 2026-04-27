@@ -70,18 +70,22 @@ class pPRMSolver(Solver):
     :param k_nearest: PRM neighbour connections per sample.
     :param max_cell_density: upper bound on per-cell density used by grid
         refinement. Lower values split large regions into more cells.
+    :param save_visualization: when truthy, write a cell-decomposition PNG
+        to visualizations/ on every solve.
     """
     def __init__(
             self,
             num_samples: int = 50,
             k_nearest: int = 8,
             max_cell_density: int = 100,
+            save_visualization: bool = False,
             **kwargs,
     ):
         super().__init__(**kwargs)
         self.num_samples = num_samples
         self.k_nearest = k_nearest
         self.max_cell_density = max_cell_density
+        self.save_visualization = save_visualization
 
         self._arrangement = None
         self._hlg = None
@@ -107,6 +111,7 @@ class pPRMSolver(Solver):
             "num_samples": ("PRM samples per cell:", 50, int),
             "k_nearest": ("PRM k-nearest neighbours:", 8, int),
             "max_cell_density": ("Max cell density (grid refinement):", 100, int),
+            "save_visualization": ("Save cell-decomposition PNG (0/1):", 0, int),
             **super().get_arguments(),
         }
 
@@ -229,7 +234,9 @@ class pPRMSolver(Solver):
             num_ports: int,
     ) -> None:
         """Save a cell-decomposition PNG into visualizations/. Skipped if
-        the scene has no source-path attribute."""
+        the user did not opt in or the scene has no source-path attribute."""
+        if not self.save_visualization:
+            return
         src = getattr(scene, "_source_path", None)
         if src is None:
             return

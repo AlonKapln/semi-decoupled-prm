@@ -12,7 +12,7 @@ from partition import Partition
 _COORD_PRECISION = 10
 
 # Min along-edge spacing between parallel ports (units of r).
-_MIN_PORT_SPACING_R = 10.0
+_MIN_PORT_SPACING_R = 4.0
 
 # Min separation between two port points on different shared edges of
 # the same cell (units of r). 2r is the joint-PRM floor; 2.5r gives

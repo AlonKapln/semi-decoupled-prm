@@ -282,8 +282,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="Benchmark pPRMSolver vs discopygal solvers on the scenes/ suite.",
     )
-    ap.add_argument("--timeout", type=float, default=300.0,
-                    help="Per-run wall-clock cap in seconds (default: 300)")
+    ap.add_argument("--timeout", type=float, default=360.0,
+                    help="Per-run wall-clock cap in seconds (default: 360)")
     ap.add_argument("--out", default="benchmark_results.csv",
                     help="Output CSV path")
     ap.add_argument("--scenes", nargs="+", default=None,
