@@ -232,7 +232,7 @@ def main() -> None:
     ap.add_argument("--scenes", nargs="+", default=None,
                     help="Scene basenames (no .json). Default: all.")
     ap.add_argument("--solvers", nargs="+", default=None,
-                    help=f"Solver names. Default: all of {list(SOLVERS)}")
+                    help="Solver names. Default: every solver in SOLVERS.")
     args = ap.parse_args()
 
     if args.solvers:

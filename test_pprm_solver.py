@@ -11,7 +11,6 @@ from pprm_solver import pPRMSolver
 
 SCENES_DIR = os.path.join(os.path.dirname(__file__), "scenes")
 
-# Helpers
 
 def _run_solver(
     scene: Scene,

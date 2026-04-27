@@ -124,10 +124,6 @@ class pPRMSolver(Solver):
         else:
             print(msg)
 
-    # ------------------------------------------------------------------
-    # Main pipeline
-    # ------------------------------------------------------------------
-
     def _solve(self) -> PathCollection:
         """Run the full pipeline on the loaded scene.
 
