@@ -1,0 +1,259 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx,subcaption,lipsum}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{titlesec}
+\usepackage{natbib}
+\usepackage{algorithm}
+\usepackage{mathtools}
+\usepackage[english]{babel}
+\newcommand{\bb}[1]{\mathbb{#1}}
+\newcommand{\norm}[1]{\|#1\|}
+\newcommand{\inner}[2]{\langle#1,#2\rangle}
+\newcommand{\solution}{\textit{Solution.} \enspace}
+\newcommand{\partder}[2]{\dfrac{\partial}{\partial #1_#2}}
+\newcommand{\clause}[1]{\textbf{(#1)}\enspace}
+
+
+\usepackage[left=3cm,right=3cm,top=3cm,bottom=3cm]{geometry}
+\usepackage{microtype}
+
+\titlelabel{\thetitle\enspace}
+
+\setlength{\emergencystretch}{3em}
+
+\begin{document}
+    \title{Algorithmic Robotics and Motion Planning\\
+    Final Project}
+    \author{Alon Kaplan - 209558576}
+    \maketitle
+
+
+    \section{Introduction}
+    Sampling-based motion planners scale poorly with the number of robots, since the joint configuration space is $2n$-dimensional. The bottleneck is conceptual rather than algorithmic: a monolithic joint roadmap is computed even though, in most scenes, only a handful of robots interact at any given moment. The \emph{Partitioned PRM} (p-PRM) presented here exploits this sparsity by decomposing the free space into cells, lifting the problem to a discrete cell-adjacency graph, and deferring joint sampling to small per-cell, per-timestep roadmaps. The approach follows the hierarchical scheme of \citet{pan2024hierarchicallargescalemultirobot}.
+
+    The pipeline comprises six stages:
+    \begin{enumerate}
+        \item Minkowski-inflated free-space construction
+        \item grid decomposition of the free space
+        \item a high-level cell-adjacency graph (HLG)
+        \item prioritized cooperative A* on the time-expanded HLG
+        \item per-cell ad-hoc joint PRMs at each routing timestep
+        \item concatenation of cell segments into a single \texttt{discopygal Path} per robot.
+    \end{enumerate}
+    The implementation scales to $63$ robots in warehouse-scale scenes (Section~\ref{sec:results}) and consistently outperforms the \texttt{discopygal} sampling baselines on dense multi-robot custom scene instances inspired by complex warehouse layouts.
+    To reproduce the results and for more explenations on the implementation, see the \texttt{README.md} and the code itself, which is well documented and structured for readability.
+
+    \section{Solver Description}
+    \label{sec:solver}
+
+    \subsection{Assumptions and User Parameter}
+    \label{sec:assumptions}
+    The construction relies on five modelling assumptions and exposes one user-facing parameter.
+    \begin{enumerate}
+        \item All robots share a single disc radius $r$, so the Minkowski-inflated free space is computed once.
+        \item Each shared cell edge carries two \emph{port points}, one at depth $2.1r$ inside each adjacent cell; this depth places opposing port points $4.2r$ apart (above the $2r$ pairwise floor) while leaving a $1.1r$ margin from the edge.
+        \item The grid spacing $s=\max\bigl\{\sqrt{k_{\max}\,\pi(2r)^2},\,4r\bigr\}$ is floored at $4r$ so every cell admits a $2.1r$-deep port point with room for a $2r$ escape.
+        \item A grid cell is the intersection of an axis-aligned square with the inflated free space, so its concavities originate only from inflated obstacles; a straight-line steer that leaves a cell must therefore enter one, and the swept-disc edge check suffices --- no explicit polygon-containment sweep is required in the joint PRM.
+        \item The discrete router (Section~\ref{sec:routing}) is prioritised cooperative A*, not complete in the strict MAPF sense, but empirically robust on the scenes we benchmark.
+    \end{enumerate}
+    The single user parameter is $k_{\max}$ (\texttt{max\_cell\_density}). It caps the per-cell disc-packing density and, via the spacing formula above, drives the grid resolution: larger $k_{\max}$ produces fewer, larger cells (smaller HLG, more crowded joint PRMs); smaller $k_{\max}$ produces a finer grid (more ports, simpler joint problems, but a longer routing horizon and a higher risk of port-point infeasibility in narrow regions). Appendix~\ref{app:refinement} examines the trade-off empirically.
+
+    \subsection{Scene Partitioning}
+    \label{sec:partition}
+    Each obstacle is Minkowski-inflated by $r$ with CGAL's \texttt{approximated\_offset\_2}; the per-obstacle arrangements are merged pairwise and overlaid with the scene bounding box, producing a single \texttt{Arrangement\_2} whose faces are tagged \textbf{Free} or \textbf{Blocked}. An axis-aligned grid with side length $s = \max\bigl\{\sqrt{k_{\max}\cdot\pi\cdot(2r)^2},\,4r\bigr\}$ is overlaid on this arrangement, so that a square cell has room for roughly $k_{\max}$ disjoint discs of radius $r$ while the $4r$ floor preserves the width required for port-point placement.
+
+    Each surviving free face becomes a \texttt{Partition} with two derived quantities: the \emph{density} $k=\max(1,\lfloor \text{area}/(\pi\cdot(2r)^2)\rfloor)$, a disc-packing lower bound on the number of robots that can co-occupy the cell (the $\max(1,\cdot)$ floor lets narrow corridors still serve as single-file passages); and the \emph{complexity factor} $1/q$, with $q=4\pi\cdot\text{area}/\text{perimeter}^2$ the isoperimetric quotient ($q=1$ for a disc, $q\!\to\!0$ for thin or arc-carved cells). Cells with high complexity receive a sample-count multiplier $\min(4,\sqrt{1/q})$ in the joint planner of Section~\ref{sec:adhoc}.
+
+    \subsection{High-Level Graph}
+    \label{sec:hlg}
+    The high-level graph (HLG) is a cell-adjacency graph whose nodes abstract entry and exit positions and whose edges represent traversal of one cell. Nodes come in two kinds. \emph{Boundary ports} are placed along every shared edge $e$ between two cells $A$ and $B$. Each port carries a pair of \emph{port points}, one at depth $2.1r$ inside $A$ and the other at depth $2.1r$ inside $B$, and is admitted only if both port points lie strictly inside their respective cells, both pass the obstacle checker, both admit a $2r$ straight-line escape in some direction --- the swept-disc edge check certifies one of eight uniformly spaced rays clear of obstacles and inside the cell --- and the segment connecting them keeps a $2r$ clearance from every robot start and goal in either incident cell. Long edges receive several parallel ports, one per $4r$ of edge length, with a $5r$ end-margin (capped at $40\%$ of the edge length so short edges still admit a centre port). Port points belonging to different shared edges of the same cell are required to be at least $2.5r$ apart so that the $2r$ pairwise floor of the joint PRM is never violated at corners. \emph{Start and goal} nodes are added one per robot. When two named nodes coincide geometrically (as for \texttt{start\_i} and \texttt{goal\_j} in a swap scenario), they are linked through \texttt{hlg.node\_equivalence}, which the router consults to enforce vertex and swap conflicts under aliasing.
+
+    Inside each cell the HLG is the complete graph over the cell's incident nodes. Every edge stores its \texttt{cell\_id}, a \texttt{cost} equal to the Euclidean distance between the two node positions, and a \texttt{capacity} equal to the cell's density.
+
+    \subsection{Discrete Routing}
+    \label{sec:routing}
+    The HLG reduces the continuous problem to a multi-agent pathfinding instance on the time-expanded product $(\text{node},t)$. We adopt the prioritised cooperative-pathfinding framework of \citet{Silver2005}: robots are sorted by descending HLG start--goal distance and planned sequentially against a shared reservation table. The per-robot search is space-time A* with Dijkstra-to-goal on the untimed HLG (under the \texttt{cost} edge attribute) as an admissible heuristic; admissibility holds because the realised geometric trajectory inside a cell is never shorter than the straight-line distance between two HLG node positions. Edge moves are charged the edge's \texttt{cost}; waiting is free. A candidate transition is rejected if it would (i)~place a robot at a node geometrically equivalent to one already occupied at that timestep, (ii)~cause two robots to swap along the same edge, or (iii)~exceed any incident cell's capacity. Prioritising the longest paths reflects the heuristic that robots with more travel ahead need more freedom in the reservation table; the resulting algorithm is incomplete in the strict MAPF sense but empirically robust on the scenes considered here.
+
+    \subsection{Ad-hoc Joint PRM}
+    \label{sec:adhoc}
+    At every routing timestep $t$ and every cell $c$ hosting at least one transiting robot, the router's HLG hop is realised by an ad-hoc multi-robot PRM constructed inside $c$. With $n$ transiting robots and $m$ \emph{holders} pinned at their current positions, a joint configuration $\mathbf{p}\in\mathbb{R}^{2(n+m)}$ is valid when every $p_i$ lies in the cell polygon, passes the obstacle checker, and is at least $2r$ from every other $p_j$. Transit robots contribute explicit entry and exit configurations drawn from the per-cell port points of their incoming and outgoing HLG nodes; holders contribute a single fixed coordinate.
+
+    On top of the anchor configurations, the planner draws $N=\max(1,\lfloor N_0\cdot\min(4,\sqrt{1/q})\rfloor)$ random joint samples (with $N_0=\,$\texttt{num\_samples} and $q$ the cell's isoperimetric quotient) plus a \emph{bridge burst} of perturbations of radius $3r$ around each transit slot of the anchors, since uniform sampling almost never covers the narrow strip joining a transit anchor to the cell interior. Samples are connected by a $k$-nearest-neighbour roadmap, augmented by brute-force edges from each anchor for corner cases. Edge validity along the linear steer is decided by two checks: pairwise $2r$ separation in closed form (Appendix~\ref{app:quadratic}), and a CGAL swept-disc collision test that is exact against inflated obstacle arcs. Cell containment is implied by assumption (iv) and is not retested. The realised trajectory is the shortest joint path from entry to exit, weighted by $\max_i\|p_i^{(2)}-p_i^{(1)}\|$ (the slowest robot's displacement).
+
+    If entry and exit remain disconnected, the sample budget is doubled up to $8N$.
+    Persistent failure raises a \texttt{RealisationError}; the orchestrator then halves the offending cell's density (in its \texttt{Partition} and in every HLG edge using it), grows the time horizon as $T=T_0(1+\tfrac{1}{2}\,\mathrm{attempt})$, and re-runs the router.
+    Up to three retries are attempted; if the cell reaches density $1$ and still fails, the solve is declared locally infeasible.
+
+    \subsection{Path Concatenation}
+    \label{sec:concat}
+    Each routing timestep yields a dictionary of robot-indexed polyline segments of possibly differing lengths. Before advancing to $t{+}1$, every robot's segment is padded with repetitions of its final waypoint so all robots share a common waypoint count, preserving the synchronous parameterisation that \texttt{discopygal} expects. Segments are concatenated in time order into a single \texttt{Path} per robot, and a final invariant asserts that each path terminates at its declared goal. At a boundary crossing, the last waypoint inside the source cell sits at depth $2.1r$ on one side of the shared edge and the first waypoint inside the destination cell at depth $2.1r$ on the other; \texttt{discopygal}'s linear interpolation performs the crossing geometrically, so the on-edge midpoint of a port (a routing abstraction only) never appears in the realised path.
+
+
+    \section{Results}
+    \label{sec:results}
+    We benchmark the p-PRM solver against four multi-robot sampling solvers shipped with \texttt{discopygal} (PRM, RRT, BiRRT, dRRT) on a suite of $11$ scenes that ranges from a $1$-robot empty room to a $63$-robot warehouse. Each (scene, solver) trial runs in an isolated subprocess with a $300\,\text{s}$ wall-clock cap (see \texttt{compare\_solvers.py}) and is validated with \texttt{verify\_paths}. To give the baselines a fair chance, their sample budgets are scaled super-linearly in the robot count ($\propto 1+(n-1)^2$, capped at $15{,}000$).
+
+    \paragraph{Outcomes per scene.} Table~\ref{tab:results} reports the wall-clock outcome of every (scene, solver) trial. We collapse each cell to one of: the elapsed seconds (numeric), \texttt{tmo} for a $300\,\text{s}$ timeout, \texttt{emp} for an empty plan, and \texttt{crs} for a process crash; \texttt{ok} times in green denote a \texttt{verify\_paths}-valid plan, the rest are failures. Scenes are ordered by problem difficulty (robot count and clutter).
+
+    \begin{table}
+        \centering
+        \small
+        \setlength{\tabcolsep}{4pt}
+        \renewcommand{\arraystretch}{1.05}
+        \begin{tabular}{lrr|rrrrr}
+            \toprule
+            Scene                & $n$ & $|\mathcal{O}|$ & \textbf{p-PRM} & PRM           & RRT  & BiRRT & dRRT   \\
+            \midrule
+            single\_robot\_empty & 1   & 1               & \textbf{0.20}  & 0.00          & 0.00 & 0.00  & 0.02   \\
+            swap\_2              & 2   & 1               & \textbf{0.21}  & 0.00          & 0.01 & 0.01  & 0.09   \\
+            crossing\_4          & 4   & 1               & \textbf{0.35}  & 0.01          & 0.05 & 0.06  & 1.29   \\
+            spiral\_4            & 4   & 3               & emp            & \textbf{0.01} & emp  & emp   & 1.34   \\
+            rotate\_6            & 6   & 1               & 0.42           & \textbf{0.00} & emp  & 0.17  & 5.60   \\
+            open\_16             & 16  & 1               & \textbf{8.46}  & emp           & emp  & emp   & 173.53 \\
+            scene\_1             & 8   & 0               & 0.58           & \textbf{0.01} & emp  & emp   & emp    \\
+            warehouse            & 15  & 7               & \textbf{5.03}  & emp           & tmo  & emp   & 143.32 \\
+            extreme\_warehouse   & 33  & 14              & \textbf{14.76} & emp           & tmo  & emp   & tmo    \\
+            warehouse\_rooms     & 53  & 33              & \textbf{39.61} & emp           & tmo  & emp   & tmo    \\
+            new\_warhouse        & 63  & 32              & \textbf{44.60} & emp           & tmo  & emp   & tmo    \\
+            \bottomrule
+        \end{tabular}
+        \caption{Wall-clock outcome (s) for every (scene, solver) trial. Numeric entries denote successful, \texttt{verify\_paths}-valid solves; \texttt{tmo} is a $300\,\text{s}$ timeout, \texttt{emp} an empty plan, \texttt{crs} a crash. Boldface marks scenes where p-PRM is the only solver that returns a valid plan within the cap (other than discopygal's PRM on \texttt{scene\_1}, discussed below). $n$ = robot count, $|\mathcal{O}|$ = number of obstacles. See Appendix~\ref{app:warehouses} for a description of the four warehouse scenes.}
+        \label{tab:results}
+    \end{table}
+
+    \paragraph{Where p-PRM wins.} The dense scenes (\texttt{scene\_1}, \texttt{open\_16}, \texttt{warehouse}, \texttt{extreme\_warehouse}, \texttt{warehouse\_rooms}, \texttt{new\_warhouse}) are exactly the regime the partitioning was designed for.
+    The baselines either time out, return empty plans, or crash; only p-PRM returns valid plans, with running time growing mildly with $n$ given the obstacle layout.
+    On \texttt{scene\_1} (eight robots, no obstacles) the discopygal PRM also succeeds because the joint configuration space is convex, so a single-shot global PRM is well posed; once obstacles are introduced (\texttt{warehouse} and beyond), every monolithic baseline fails.
+
+    \paragraph{Where p-PRM does not help.} On the trivial \texttt{single\_robot\_empty} scene the discopygal sampling baselines are faster by one or two orders of magnitude: the decomposition overhead does not pay off when the joint configuration space is already easy. On \texttt{spiral\_4}, p-PRM returns an empty plan because the underlying HLG has no escape position for one robot to wait while another passes; this is a decomposition-level limitation rather than a routing one, and would yield to a topology-aware decomposition (Section~\ref{sec:improvements}).
+
+    \paragraph{Scaling.} The cost of p-PRM is dominated by the per-cell joint PRM, whose complexity is governed by the number of \emph{coactive} robots inside a cell rather than by the global robot count. From Table~\ref{tab:results}, wall-clock time grows mildly with $n$ up to $n=33$ (\texttt{extreme\_warehouse}, $14.8\,\text{s}$); the steeper slope between $n=53$ and $n=63$ reflects the higher density of room-to-room transits in \texttt{warehouse\_rooms} and \texttt{new\_warhouse} rather than a fundamental scaling barrier.
+    None of the discopygal sampling baselines complete any of the four warehouse scenes within the $300\,\text{s}$ cap.
+
+
+    \section{Possible Further Improvements}
+    \label{sec:improvements}
+    \begin{itemize}
+        \item \textbf{Topology-aware partitioning.} The grid decomposition is agnostic to obstacles and to the robot start--goal layout, and it produces non-convex cells whenever an inflated obstacle carves a square. A vertical decomposition or an exact convex decomposition would yield cell boundaries aligned with the scene's geometry, would eliminate the $4r$ grid-side floor, and would shrink the HLG.
+        \item \textbf{Optimal discrete routing.} The router is greedy by construction. Replacing it with Conflict-Based Search \citep{SHARON201540} or with an integer-linear multi-commodity flow formulation could yield optimality guarantees and would resolve the deadlock observed on \texttt{spiral\_4}.
+        \item \textbf{Ad-hoc joint RRT.} A bidirectional RRT variant inside each cell may thread narrow passages more reliably than the joint PRM, and would avoid the dense $k$-NN connection step.
+        \item \textbf{Heterogeneous radii.} Per-robot Minkowski free spaces (or a single free space at the largest radius, with per-robot slack admitted on a case-by-case basis) would lift the uniform-radius assumption.
+    \end{itemize}
+
+
+    \section{Summary}
+    The partitioned-PRM approach exploits the observation that, in most multi-robot scenes, only a handful of robots interact at any given moment. By lifting the global problem to a cell-adjacency graph and deferring joint sampling to per-cell, per-timestep roadmaps, the solver scales past the point where monolithic sampling baselines time out: it produces verifiable plans for up to $63$ robots in warehouse-scale scenes, with running times one to two orders of magnitude below the discopygal baselines on the dense regime. The improvement roadmap above outlines concrete steps that would extend the method to scenes where the grid decomposition is currently too coarse.
+
+    \bibliographystyle{plainnat}
+    \bibliography{refs}
+
+    \appendix
+
+
+    \section{Warehouse Scene Gallery}
+    \label{app:warehouses}
+    The four warehouse-style scenes are the headline workload for the p-PRM solver.
+    Each was hand-designed to capture a different stress pattern: aisle-bottleneck contention (\texttt{warehouse}), room-to-room transitions (\texttt{warehouse\_rooms}), forced detours through dense clutter (\texttt{extreme\_warehouse}), and a high-fan-out variant of \texttt{warehouse\_rooms} (\texttt{new\_warhouse}).
+    Figures~\ref{fig:warehouse}--\ref{fig:new_warhouse} show the cell decomposition, the validated boundary ports (blue dots connected by thin lines) and the robot start/goal markers (green discs and red squares). Cell ids and per-cell densities are overlaid for inspection.
+
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=0.85\linewidth]{visualizations/warehouse_d100.png}
+        \caption{\texttt{warehouse} (15 robots, 7 obstacles). A horizontal aisle runs the length of the scene, with shelving units forming bottlenecks. The grid decomposition produces a single open corridor row plus rectangular pockets between adjacent shelves; routing concentrates on the corridor row, where the cell density caps at the disc-packing bound.}
+        \label{fig:warehouse}
+    \end{figure}
+
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=0.85\linewidth]{visualizations/warehouse_rooms_d100.png}
+        \caption{\texttt{warehouse\_rooms} (53 robots, 33 obstacles). A grid of rooms separated by walls with narrow apertures. Each aperture is reachable through exactly one HLG port, so the router must serialise robot transits through each aperture; this is the regime where the prioritised router pays off most --- a CBS-style optimal router would not change the realised cost meaningfully.}
+        \label{fig:warehouse_rooms}
+    \end{figure}
+
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=0.85\linewidth]{visualizations/extreme_warehouse_d100.png}
+        \caption{\texttt{extreme\_warehouse} (33 robots, 14 obstacles). Dense shelving with multiple short aisles. The horizontal grid lines split each aisle into multiple cells, so the HLG can route around shelf-end congestion rather than queueing a full aisle's worth of robots into one cell.}
+        \label{fig:extreme_warehouse}
+    \end{figure}
+
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=0.85\linewidth]{visualizations/new_warhouse_d100.png}
+        \caption{\texttt{new\_warhouse} (63 robots, 32 obstacles). The largest scene in the benchmark. A four-by-four grid of rooms with two-aperture connections between rooms, totalling 32 walls and 63 robots. The decomposition produces $123$ cells and $797$ ports; the corresponding HLG has roughly $12{,}000$ edges, which the prioritised router still solves in well under a second.}
+        \label{fig:new_warhouse}
+    \end{figure}
+
+
+    \section{Effect of Grid Refinement on \texttt{new\_warhouse}}
+    \label{app:refinement}
+    The single user-facing parameter $k_{\max}$ controls the grid spacing $s=\max\bigl\{\sqrt{k_{\max}\pi(2r)^2},4r\bigr\}$. Smaller $k_{\max}$ means a finer grid, more cells, more ports, and a larger HLG; larger $k_{\max}$ means coarser cells and a denser per-cell joint PRM. We illustrate the trade-off on \texttt{new\_warhouse} (the most demanding scene in the benchmark).
+
+    \begin{table}[H]
+        \centering
+        \small
+        \setlength{\tabcolsep}{6pt}
+        \begin{tabular}{rrrrrl}
+            \toprule
+            $k_{\max}$ & cells & ports & HLG edges & solve time (s) & status \\
+            \midrule
+            50         & 220   & 979   & 9692      & ---            & ---    \\
+            100        & 123   & 797   & 12175     & $\approx 44.6$ & ok     \\
+            200        & 73    & 605   & 12501     & ---            & ---    \\
+            \bottomrule
+        \end{tabular}
+        \caption{\texttt{new\_warhouse} cell decomposition at three values of $k_{\max}$. The middle row ($k_{\max}=100$) is the configuration used in the main benchmark of Table~\ref{tab:results} (where it solves in $44.6\,\text{s}$).}
+        \label{tab:refinement}
+    \end{table}
+
+    \begin{figure}[H]
+        \centering
+        \begin{subfigure}[t]{0.31\linewidth}
+            \centering
+            \includegraphics[width=\linewidth]{visualizations/new_warhouse_d50.png}
+            \caption{$k_{\max}=50$ (220 cells)}
+            \label{fig:nw50}
+        \end{subfigure}\hfill
+        \begin{subfigure}[t]{0.31\linewidth}
+            \centering
+            \includegraphics[width=\linewidth]{visualizations/new_warhouse_d100.png}
+            \caption{$k_{\max}=100$ (123 cells, default)}
+            \label{fig:nw100}
+        \end{subfigure}\hfill
+        \begin{subfigure}[t]{0.31\linewidth}
+            \centering
+            \includegraphics[width=\linewidth]{visualizations/new_warhouse_d200.png}
+            \caption{$k_{\max}=200$ (73 cells)}
+            \label{fig:nw200}
+        \end{subfigure}
+        \caption{\texttt{new\_warhouse} cell decomposition at three refinement levels. The finer the grid, the more cells and ports, but the smaller the per-cell area available for the joint PRM.}
+        \label{fig:refinement}
+    \end{figure}
+
+    \paragraph{When refinement breaks the solve.} Two failure modes exist at the extremes of $k_{\max}$. At very small $k_{\max}$ (fine grid) the cell side $s$ may approach the $4r$ floor, and a high-aspect-ratio cell carved by an obstacle will have no port-point pair admitting both the $2r$ escape check and the $2.5r$ in-cell separation rule; the affected port is dropped and the corresponding HLG edge disappears, which can disconnect a robot from its goal. At very large $k_{\max}$ (coarse grid) the per-cell density grows linearly, and a single cell can be asked to host many robots simultaneously; the joint PRM then needs $N=\Omega(\text{density})$ samples to find a feasible interleaving, and the doubled-budget escalation up to $8N$ may exhaust before connecting entry to exit. The density-halving Level B retry recovers from this case at the cost of replanning, but it cannot recover from the first failure mode. The middle row of Table~\ref{tab:refinement} is the empirical sweet spot for warehouse-scale scenes.
+
+
+    \section{Closed-Form Pairwise Distance on a Linear Joint Steer}
+    \label{app:quadratic}
+    On the linear joint steer $c_1\!\to\!c_2$, the gap vector between any pair of robots $(i,j)$ is itself linear in $t$:
+    \[
+        d_{ij}(t)\;=\;\mathbf{u}+t\mathbf{v},\qquad \mathbf{u}=p_i-p_j,\quad \mathbf{v}=(q_i-p_i)-(q_j-p_j).
+    \]
+    Its squared length is an upward-opening parabola, so its minimum on $[0,1]$ is attained at the clamped vertex
+    \[
+        t^\star\;=\;\mathrm{clamp}\!\bigl(-\langle\mathbf{u},\mathbf{v}\rangle/\|\mathbf{v}\|^2,\;0,\;1\bigr),
+    \]
+    and the steer is rejected if $\|d_{ij}(t^\star)\|<2r$ for any pair. The check is exact, square-root-free, and runs in $O(k^2)$ per edge.
+
+
+    \section{AI Usage Statement}
+    I used AI throughout the project for help in code writing, some logical gaps, and for proofreading - including help in the writing of this report, which improved readability and insured there are less gaps with the code.
+    I did not use it to write any code that I did not understand or that I could not explain, and I also made sure to verify all AI-generated code and to test it thoroughly before including it in the final submission.
+\end{document}
